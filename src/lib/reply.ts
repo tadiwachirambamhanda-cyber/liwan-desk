@@ -170,15 +170,40 @@ function notIn<T>(found: Set<T>, allowed: Set<T>): T[] {
 const DISCOUNT_WORDS =
   /discount|\bpromo|coupon|voucher|special offer|limited[- ]time|\b\d+\s*%|per ?cent|cheaper|complimentary|on the house|\bfree (?:of charge|check|consult|clean|whiten|x-?ray|visit|gift|polish)|خصم|تخفيض|عرض خاص|مجان|هدية/;
 
-const MEDICAL_ADVICE_WORDS = [
-  /\b(?:ibuprofen|paracetamol|acetaminophen|panadol|aspirin|painkillers?|pain relief|antibiotics?|amoxicillin|ointment|medication|medicine|dosage)\b/,
+// Always advice, wherever it appears: what to do for the pain, or what is wrong.
+const MEDICAL_ADVICE_ALWAYS = [
   /\byou (?:should|must|need to)\s+(?:to\s+)?(?:take|avoid|rinse|gargle|apply|use|eat|drink|brush|floss|keep|put|hold|elevate|stay)\b/,
   /\b(?:rinse|gargle|cold compress|salt water|warm water|clove oil|ice pack)\b/,
   /\b(?:sounds like|looks like|could be|might be|may be|probably|likely)\b[^.!?]{0,40}\b(?:infection|abscess|decay|cavity|gum disease|nerve|fracture|cracked)\b/,
   /\byou (?:have|may have|might have|likely have|probably have)\b[^.!?]{0,40}\b(?:infection|abscess|decay|cavity|gum disease|nerve)\b/,
-  /diagnos/,
-  /مسكن|مضاد حيوي|مضادات حيوية|إيبوبروفين|ايبوبروفين|باراسيتامول|بانادول|غرغر|كمادات|تشخيص|ماء مالح/,
+  /غرغر|كمادات|ماء مالح/,
 ];
+
+// Medicine and diagnosis words. Mentioning them is fine when the reply is declining
+// to advise ("I can't advise on painkillers"). It is advice when it recommends one.
+const MEDICAL_MENTION =
+  /\b(?:ibuprofen|paracetamol|acetaminophen|panadol|aspirin|painkillers?|pain relief|antibiotics?|amoxicillin|ointment|medication|medicine|dosage)\b|diagnos|مسكن|مضاد حيوي|مضادات حيوية|إيبوبروفين|ايبوبروفين|باراسيتامول|بانادول|تشخيص/;
+
+const DECLINES_TO_ADVISE =
+  /(?:\bcan['’]?t\b|\bcannot\b|\bcan not\b|\bunable to\b|\bnot able to\b|\bam not (?:able|allowed|qualified)\b|\bnot in a position\b|\bdon['’]?t\b|\bdo not\b|\bwon['’]?t\b)[^.!?]{0,30}(?:advis|recommend|suggest|\bsay\b|\btell\b|comment|\bgive\b|provide|offer|diagnos|help with)|لا (?:أستطيع|يمكنني|أقدر|أقدم|أملك)/;
+
+const RECOMMENDS_A_MEDICINE =
+  /\b(?:take|taking|use|using|try|apply|have|get)\b[^.!?]{0,25}\b(?:ibuprofen|paracetamol|acetaminophen|panadol|aspirin|painkillers?|pain relief|antibiotics?|amoxicillin|ointment|medication|medicine)\b/;
+
+// Returns the offending words, or null when the reply gives no medical advice.
+function findMedicalAdvice(lower: string): string | null {
+  for (const re of MEDICAL_ADVICE_ALWAYS) {
+    const hit = lower.match(re)?.[0];
+    if (hit) return hit;
+  }
+  // Judge each clause on its own, so "I can't advise, but ibuprofen helps" is still caught.
+  const clauses = lower.split(/(?<=[.!?؟])\s+|\n+/).flatMap((s) => s.split(/\b(?:but|however|although|though|except)\b/));
+  for (const clause of clauses) {
+    const hit = clause.match(MEDICAL_MENTION)?.[0];
+    if (hit && (!DECLINES_TO_ADVISE.test(clause) || RECOMMENDS_A_MEDICINE.test(clause))) return hit;
+  }
+  return null;
+}
 
 export function checkReply(draft: string, facts: Facts): ReplyCheck[] {
   const allowed = extractTokens(factsToText(facts));
@@ -195,7 +220,7 @@ export function checkReply(draft: string, facts: Facts): ReplyCheck[] {
   ];
 
   const discount = lower.match(DISCOUNT_WORDS)?.[0];
-  const medical = MEDICAL_ADVICE_WORDS.map((re) => lower.match(re)?.[0]).find(Boolean);
+  const medical = findMedicalAdvice(lower);
 
   return [
     {
