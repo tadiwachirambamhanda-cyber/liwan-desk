@@ -2,9 +2,64 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Step } from "../api/whatsapp/route";
+import type { Classification } from "@/lib/jev";
 
 type Bubble = { id: string; from: "customer" | "agent"; text: string };
-type StepGroup = { id: string; message: string; steps: Step[] };
+type StepGroup = {
+  id: string;
+  message: string;
+  steps: Step[];
+  classification?: Classification;
+};
+
+function formatCost(usd: number | null): string {
+  if (usd === null) return "cost unknown";
+  if (usd < 0.0001) return "under $0.0001";
+  return `$${usd.toFixed(usd < 0.01 ? 5 : 4)}`;
+}
+
+function ClassificationView({ c }: { c: Classification }) {
+  const engine = c.engine === "jev" ? "Jev" : "Claude";
+  return (
+    <div className="mt-3 rounded-md bg-neutral-50 p-3 text-sm">
+      <p className="font-medium text-neutral-900">
+        {engine} <span className="font-normal text-neutral-500">({c.model})</span>
+      </p>
+      {c.note && <p className="mt-1 text-amber-700">{c.note}</p>}
+      {c.ok ? (
+        <>
+          <ul className="mt-2 space-y-1">
+            {c.answers.map((a) => (
+              <li key={a.question} className="flex flex-wrap items-baseline justify-between gap-x-3">
+                <span className="text-neutral-600">{a.asked}</span>
+                <span className={a.unsure ? "font-medium text-amber-700" : "font-medium text-neutral-900"}>
+                  {a.answer.replaceAll("_", " ")}{" "}
+                  <span className="font-normal text-neutral-500">
+                    {Math.round(a.confidence * 100)}%
+                  </span>
+                  {a.unsure && (
+                    <span className="font-normal text-neutral-500">
+                      {" "}
+                      (picked {a.label.replaceAll("_", " ")})
+                    </span>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-xs text-neutral-500">
+            {c.ms} ms · {formatCost(c.costUsd)}
+            {c.inputTokens !== null && ` · ${c.inputTokens} input tokens`}
+          </p>
+        </>
+      ) : (
+        <p className="mt-2 text-red-700">
+          {c.error} <span className="text-neutral-500">· {c.ms} ms</span>
+        </p>
+      )}
+    </div>
+  );
+}
 
 // A fake customer phone number and business number for the simulator.
 const CUSTOMER_NUMBER = "15551234567";
@@ -71,8 +126,12 @@ export default function PhonePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(buildPayload(body, messageId)),
       });
-      const data: { steps: Step[]; reply: string | null } = await res.json();
-      setGroups((g) => [...g, { id: messageId, message: body, steps: data.steps }]);
+      const data: { steps: Step[]; reply: string | null; classification?: Classification } =
+        await res.json();
+      setGroups((g) => [
+        ...g,
+        { id: messageId, message: body, steps: data.steps, classification: data.classification },
+      ]);
       if (data.reply) {
         setBubbles((b) => [...b, { id: `${messageId}-reply`, from: "agent", text: data.reply! }]);
       }
@@ -168,6 +227,7 @@ export default function PhonePage() {
                     </li>
                   ))}
                 </ol>
+                {g.classification && <ClassificationView c={g.classification} />}
               </li>
             ))}
           </ol>
