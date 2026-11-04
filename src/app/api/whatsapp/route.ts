@@ -1,6 +1,7 @@
 // The agent's front door. Receives WhatsApp Cloud API webhook payloads.
 // For now it only echoes the message back and reports the steps it took.
 
+import { applyClinicRules } from "@/lib/clinic";
 import { classifyMessage } from "@/lib/jev";
 
 export type Step = { label: string; detail: string };
@@ -61,8 +62,16 @@ export async function POST(request: Request) {
         },
   );
 
-  const reply = `You said: ${message.text.body}`;
-  steps.push({ label: "Wrote a reply", detail: "Repeated the customer's message back" });
+  const decision = applyClinicRules(message.text.body, classification);
+  steps.push({
+    label: "Applied the clinic rules",
+    detail: decision.action === "flag" ? `Flagged for a person: ${decision.reason}` : "Answered from the clinic's own data",
+  });
 
-  return Response.json({ steps, reply, classification });
+  steps.push({
+    label: "Wrote a reply",
+    detail: decision.action === "flag" ? "Told the customer a person will be in touch" : "Sent the answer from the rules",
+  });
+
+  return Response.json({ steps, reply: decision.reply, classification, decision });
 }

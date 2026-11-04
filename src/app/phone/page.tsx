@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Step } from "../api/whatsapp/route";
 import type { Classification } from "@/lib/jev";
+import type { Decision } from "@/lib/clinic";
 
 type Bubble = { id: string; from: "customer" | "agent"; text: string };
 type StepGroup = {
@@ -10,7 +11,32 @@ type StepGroup = {
   message: string;
   steps: Step[];
   classification?: Classification;
+  decision?: Decision;
 };
+
+function DecisionView({ d }: { d: Decision }) {
+  const mark = { pass: "✓", flag: "⚑", info: "•" } as const;
+  const color = { pass: "text-green-700", flag: "text-amber-700", info: "text-neutral-500" } as const;
+  return (
+    <div className="mt-3 rounded-md bg-neutral-50 p-3 text-sm">
+      <p className="font-medium text-neutral-900">Clinic rules</p>
+      <ul className="mt-2 space-y-1">
+        {d.checks.map((c, i) => (
+          <li key={i} className="flex gap-2">
+            <span className={color[c.status]}>{mark[c.status]}</span>
+            <span>
+              <span className="text-neutral-600">{c.label}</span>{" "}
+              <span className="font-medium text-neutral-900">{c.result}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className={`mt-2 font-medium ${d.action === "flag" ? "text-amber-700" : "text-green-700"}`}>
+        {d.action === "flag" ? `Flagged for a person: ${d.reason}` : "Answered by the rules"}
+      </p>
+    </div>
+  );
+}
 
 function formatCost(usd: number | null): string {
   if (usd === null) return "cost unknown";
@@ -126,11 +152,21 @@ export default function PhonePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(buildPayload(body, messageId)),
       });
-      const data: { steps: Step[]; reply: string | null; classification?: Classification } =
-        await res.json();
+      const data: {
+        steps: Step[];
+        reply: string | null;
+        classification?: Classification;
+        decision?: Decision;
+      } = await res.json();
       setGroups((g) => [
         ...g,
-        { id: messageId, message: body, steps: data.steps, classification: data.classification },
+        {
+          id: messageId,
+          message: body,
+          steps: data.steps,
+          classification: data.classification,
+          decision: data.decision,
+        },
       ]);
       if (data.reply) {
         setBubbles((b) => [...b, { id: `${messageId}-reply`, from: "agent", text: data.reply! }]);
@@ -228,6 +264,7 @@ export default function PhonePage() {
                   ))}
                 </ol>
                 {g.classification && <ClassificationView c={g.classification} />}
+                {g.decision && <DecisionView d={g.decision} />}
               </li>
             ))}
           </ol>
