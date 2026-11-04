@@ -1,0 +1,46 @@
+# Checks for every pull request. Copy to .github/workflows/ci.yml in each web app repo
+# (the /pr skill does this for you if the file is missing).
+#
+# It runs three package.json scripts on Node 24, and each one must exist:
+#   "typecheck": "tsc --noEmit"
+#   "lint": "eslint"          (Next.js 16 removed `next lint`, so lint calls eslint directly)
+#   "build": "next build"
+# If a script is missing, add it to package.json rather than removing the step.
+#
+# The build runs with no environment variables set. Read env vars inside functions at
+# request time, not at the top of a file, so the build never needs a key.
+# Never paste a key or secret into this file.
+#
+# For an Expo (mobile) app at the repo root, use ci-mobile.yml instead. For a repo with a
+# web/ app and a mobile/ app, use ci-web-mobile.yml. The /pr skill picks the right one.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
