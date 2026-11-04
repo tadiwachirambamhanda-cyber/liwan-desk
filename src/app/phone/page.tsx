@@ -4,15 +4,59 @@ import { useEffect, useRef, useState } from "react";
 import type { Step } from "../api/whatsapp/route";
 import type { Classification } from "@/lib/jev";
 import type { Decision } from "@/lib/clinic";
+import type { WriterResult } from "@/lib/reply";
 
-type Bubble = { id: string; from: "customer" | "agent"; text: string };
+type Bubble = { id: string; from: "customer" | "agent" | "receptionist"; text: string };
 type StepGroup = {
   id: string;
   message: string;
   steps: Step[];
   classification?: Classification;
   decision?: Decision;
+  writer?: WriterResult | null;
 };
+type Handoff = { id: string; message: string; reason: string; replies: string[] };
+
+function WriterView({ w, held }: { w: WriterResult; held: boolean }) {
+  return (
+    <div className="mt-3 rounded-md bg-neutral-50 p-3 text-sm">
+      <p className="font-medium text-neutral-900">
+        Claude reply <span className="font-normal text-neutral-500">({w.model})</span>
+      </p>
+      {w.error ? (
+        <p className="mt-2 text-red-700">{w.error}</p>
+      ) : (
+        <>
+          <p className="mt-2 whitespace-pre-wrap rounded bg-white p-2 text-neutral-800">
+            {w.draft}
+          </p>
+          <ul className="mt-2 space-y-1">
+            {w.checks.map((c) => (
+              <li key={c.name} className="flex gap-2">
+                <span className={c.passed ? "text-green-700" : "font-bold text-red-700"}>
+                  {c.passed ? "✓" : "✗"}
+                </span>
+                <span>
+                  <span className="text-neutral-600">{c.name}</span>{" "}
+                  <span className={c.passed ? "text-neutral-500" : "font-medium text-red-700"}>
+                    {c.detail}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      <p className="mt-2 text-xs text-neutral-500">
+        {w.ms} ms · {formatCost(w.costUsd)}
+        {w.inputTokens !== null && ` · ${w.inputTokens} in / ${w.outputTokens ?? 0} out tokens`}
+      </p>
+      <p className={`mt-1 font-medium ${held ? "text-amber-700" : "text-green-700"}`}>
+        {held ? "Held back. A holding reply was sent instead." : "Sent to the phone."}
+      </p>
+    </div>
+  );
+}
 
 function DecisionView({ d }: { d: Decision }) {
   const mark = { pass: "✓", flag: "⚑", info: "•" } as const;
@@ -32,7 +76,7 @@ function DecisionView({ d }: { d: Decision }) {
         ))}
       </ul>
       <p className={`mt-2 font-medium ${d.action === "flag" ? "text-amber-700" : "text-green-700"}`}>
-        {d.action === "flag" ? `Flagged for a person: ${d.reason}` : "Answered by the rules"}
+        {d.action === "flag" ? `Flagged for a person: ${d.reason}` : "Facts found by the rules"}
       </p>
     </div>
   );
@@ -130,7 +174,18 @@ export default function PhonePage() {
   const [groups, setGroups] = useState<StepGroup[]>([]);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [handoffs, setHandoffs] = useState<Handoff[]>([]);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const chatEnd = useRef<HTMLDivElement>(null);
+
+  // The receptionist answers a handed-over conversation. Their reply appears on the phone.
+  function answerAsReceptionist(h: Handoff) {
+    const reply = (drafts[h.id] ?? "").trim();
+    if (!reply) return;
+    setBubbles((b) => [...b, { id: `${h.id}-person-${b.length}`, from: "receptionist", text: reply }]);
+    setHandoffs((list) => list.map((x) => (x.id === h.id ? { ...x, replies: [...x.replies, reply] } : x)));
+    setDrafts((d) => ({ ...d, [h.id]: "" }));
+  }
 
   useEffect(() => {
     chatEnd.current?.scrollIntoView({ behavior: "smooth" });
@@ -157,6 +212,8 @@ export default function PhonePage() {
         reply: string | null;
         classification?: Classification;
         decision?: Decision;
+        writer?: WriterResult | null;
+        handoff?: { reason: string } | null;
       } = await res.json();
       setGroups((g) => [
         ...g,
@@ -166,8 +223,13 @@ export default function PhonePage() {
           steps: data.steps,
           classification: data.classification,
           decision: data.decision,
+          writer: data.writer,
         },
       ]);
+      if (data.handoff) {
+        const reason = data.handoff.reason;
+        setHandoffs((list) => [...list, { id: messageId, message: body, reason, replies: [] }]);
+      }
       if (data.reply) {
         setBubbles((b) => [...b, { id: `${messageId}-reply`, from: "agent", text: data.reply! }]);
       }
@@ -216,6 +278,9 @@ export default function PhonePage() {
                     b.from === "customer" ? "bg-[#d9fdd3]" : "bg-white"
                   }`}
                 >
+                  {b.from === "receptionist" && (
+                    <span className="mb-0.5 block text-xs font-medium text-[#075e54]">Receptionist</span>
+                  )}
                   {b.text}
                 </p>
               </div>
@@ -243,6 +308,46 @@ export default function PhonePage() {
 
       {/* Right: what the agent did */}
       <section className="mx-auto w-full max-w-md">
+        {handoffs.length > 0 && (
+          <div className="mb-6">
+            <h2 className="mb-3 text-lg font-semibold text-neutral-900">Handed to a person</h2>
+            <ul className="space-y-3">
+              {handoffs.map((h) => (
+                <li key={h.id} className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm">
+                  <p className="font-medium text-neutral-900">&ldquo;{h.message}&rdquo;</p>
+                  <p className="mt-1 text-amber-800">{h.reason}</p>
+                  {h.replies.map((r, i) => (
+                    <p key={i} className="mt-2 rounded bg-white p-2 text-neutral-800">
+                      <span className="text-xs font-medium text-[#075e54]">Receptionist: </span>
+                      {r}
+                    </p>
+                  ))}
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      answerAsReceptionist(h);
+                    }}
+                    className="mt-3 flex gap-2"
+                  >
+                    <input
+                      value={drafts[h.id] ?? ""}
+                      onChange={(e) => setDrafts((d) => ({ ...d, [h.id]: e.target.value }))}
+                      placeholder="Reply as the receptionist"
+                      className="min-w-0 flex-1 rounded border border-neutral-300 bg-white px-3 py-1.5 text-neutral-900 outline-none"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!(drafts[h.id] ?? "").trim()}
+                      className="rounded bg-[#075e54] px-3 py-1.5 font-medium text-white disabled:opacity-50"
+                    >
+                      Reply
+                    </button>
+                  </form>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <h2 className="mb-3 text-lg font-semibold text-neutral-900">What the agent did</h2>
         {groups.length === 0 ? (
           <p className="text-sm text-neutral-500">
@@ -265,6 +370,12 @@ export default function PhonePage() {
                 </ol>
                 {g.classification && <ClassificationView c={g.classification} />}
                 {g.decision && <DecisionView d={g.decision} />}
+                {g.writer && (
+                  <WriterView
+                    w={g.writer}
+                    held={Boolean(g.writer.error) || g.writer.checks.some((c) => !c.passed)}
+                  />
+                )}
               </li>
             ))}
           </ol>

@@ -68,14 +68,19 @@ export type Check = {
   status: "pass" | "flag" | "info";
 };
 
+// The facts the code found. These are the only facts Claude is allowed to use.
+export type Facts =
+  | { kind: "price"; treatments: { name: string; priceAed: number; from: boolean }[] }
+  | { kind: "booking_free"; requested: string }
+  | { kind: "booking_taken"; requested: string; nearestFree: string[] }
+  | { kind: "hours"; hours: { day: string; open: string; close: string }[]; openNow?: boolean };
+
 export type Decision = {
-  action: "reply" | "flag";
-  reply: string;
+  action: "answer" | "flag";
   reason: string | null; // why a person is needed, when action is "flag"
+  facts: Facts | null; // what the code found, when action is "answer"
   checks: Check[];
 };
-
-const FLAG_REPLY = "Thank you. I have passed your message to our team and someone will be in touch shortly.";
 
 // ---------------------------------------------------------------------------
 // Time helpers. "Wall time" = the clinic's clock, stored as if it were UTC.
@@ -118,6 +123,10 @@ function freeSlots(now: Date): number[] {
 function openingHoursFor(day: number): string {
   const h = OPENING_HOURS[day];
   return `${h.open} to ${h.close}`;
+}
+
+function hoursEntry(day: number): { day: string; open: string; close: string } {
+  return { day: DAY_NAMES[day], ...OPENING_HOURS[day] };
 }
 
 function isOpenAt(wall: number): boolean {
@@ -185,7 +194,7 @@ function formatPrice(item: Treatment): string {
 // ---------------------------------------------------------------------------
 
 function flag(reason: string, checks: Check[]): Decision {
-  return { action: "flag", reply: FLAG_REPLY, reason, checks };
+  return { action: "flag", reason, facts: null, checks };
 }
 
 function priceRule(message: string, checks: Check[]): Decision {
@@ -199,8 +208,12 @@ function priceRule(message: string, checks: Check[]): Decision {
     result: found.map((f) => `${f.name}: ${formatPrice(f)}`).join("; "),
     status: "pass",
   });
-  const lines = found.map((f) => `${f.name}: ${formatPrice(f)}`).join("\n");
-  return { action: "reply", reply: lines, reason: null, checks };
+  return {
+    action: "answer",
+    reason: null,
+    facts: { kind: "price", treatments: found.map((f) => ({ name: f.name, priceAed: f.aed, from: f.from })) },
+    checks,
+  };
 }
 
 function hoursRule(message: string, now: Date, checks: Check[]): Decision {
@@ -208,22 +221,26 @@ function hoursRule(message: string, now: Date, checks: Check[]): Decision {
   if (!day) {
     checks.push({ label: "Opening hours", result: "No day named, so the full week applies", status: "info" });
     return {
-      action: "reply",
-      reply: `We are open Saturday to Thursday ${openingHoursFor(6)}, and Friday ${openingHoursFor(5)}.`,
+      action: "answer",
       reason: null,
+      facts: { kind: "hours", hours: DAY_NAMES.map((_, d) => hoursEntry(d)) },
       checks,
     };
   }
   const name = DAY_NAMES[day.day];
   const wantsNow = /\bnow\b/.test(message.toLowerCase()) && day.addDays === 0;
   checks.push({ label: `Opening hours on ${name}`, result: openingHoursFor(day.day), status: "pass" });
-  let reply = `On ${name} we are open ${openingHoursFor(day.day)}.`;
+  let openNow: boolean | undefined;
   if (wantsNow) {
-    const open = isOpenAt(wallNow(now));
-    checks.push({ label: "Open right now?", result: open ? "Yes" : "No", status: "info" });
-    reply = `${open ? "Yes, we are open now." : "No, we are closed right now."} ${reply}`;
+    openNow = isOpenAt(wallNow(now));
+    checks.push({ label: "Open right now?", result: openNow ? "Yes" : "No", status: "info" });
   }
-  return { action: "reply", reply, reason: null, checks };
+  return {
+    action: "answer",
+    reason: null,
+    facts: { kind: "hours", hours: [hoursEntry(day.day)], openNow },
+    checks,
+  };
 }
 
 function bookingRule(message: string, now: Date, checks: Check[]): Decision {
@@ -248,9 +265,9 @@ function bookingRule(message: string, now: Date, checks: Check[]): Decision {
   if (free.includes(wanted)) {
     checks.push({ label: "Is that time free?", result: "Yes, it is free", status: "pass" });
     return {
-      action: "reply",
-      reply: `${describe(wanted)} is free. Reply to confirm and we will book it.`,
+      action: "answer",
       reason: null,
+      facts: { kind: "booking_free", requested: describe(wanted) },
       checks,
     };
   }
@@ -264,9 +281,9 @@ function bookingRule(message: string, now: Date, checks: Check[]): Decision {
   const options = nearest.sort((a, b) => a - b).map(describe);
   checks.push({ label: "Two nearest free times", result: options.join(" or "), status: "pass" });
   return {
-    action: "reply",
-    reply: `Sorry, that time is not available. The nearest free times are ${options.join(" or ")}. Would one of those work?`,
+    action: "answer",
     reason: null,
+    facts: { kind: "booking_taken", requested: describe(wanted), nearestFree: options },
     checks,
   };
 }

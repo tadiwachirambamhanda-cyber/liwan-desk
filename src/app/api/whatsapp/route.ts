@@ -3,6 +3,7 @@
 
 import { applyClinicRules } from "@/lib/clinic";
 import { classifyMessage } from "@/lib/jev";
+import { buildReply } from "@/lib/reply";
 
 export type Step = { label: string; detail: string };
 
@@ -65,13 +66,32 @@ export async function POST(request: Request) {
   const decision = applyClinicRules(message.text.body, classification);
   steps.push({
     label: "Applied the clinic rules",
-    detail: decision.action === "flag" ? `Flagged for a person: ${decision.reason}` : "Answered from the clinic's own data",
+    detail: decision.action === "flag" ? `Flagged for a person: ${decision.reason}` : "Found the facts in the clinic's own data",
   });
 
-  steps.push({
-    label: "Wrote a reply",
-    detail: decision.action === "flag" ? "Told the customer a person will be in touch" : "Sent the answer from the rules",
-  });
+  const outcome = await buildReply(message.text.body, decision);
+  if (outcome.writer) {
+    steps.push({ label: "Claude wrote a draft reply", detail: "Given only the facts the rules found" });
+    if (outcome.writer.draft) {
+      const failed = outcome.writer.checks.filter((c) => !c.passed);
+      steps.push({
+        label: "Checked the draft in code",
+        detail: failed.length ? `Failed: ${failed.map((c) => c.name).join("; ")}` : "All 4 checks passed",
+      });
+    }
+  }
+  steps.push(
+    outcome.handoff
+      ? { label: "Handed to a person", detail: `${outcome.handoff.reason}. Sent a holding reply.` }
+      : { label: "Sent the reply", detail: "Claude's reply passed every check" },
+  );
 
-  return Response.json({ steps, reply: decision.reply, classification, decision });
+  return Response.json({
+    steps,
+    reply: outcome.reply,
+    classification,
+    decision,
+    writer: outcome.writer,
+    handoff: outcome.handoff,
+  });
 }
