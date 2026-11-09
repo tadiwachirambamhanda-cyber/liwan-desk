@@ -91,6 +91,7 @@ export type Check = {
 // The facts the code found. These are the only facts Claude is allowed to use.
 export type Facts =
   | { kind: "greeting" }
+  | { kind: "closing" }
   | { kind: "price"; treatments: { name: string; priceAed: number; from: boolean }[] }
   | { kind: "booking_free"; requested: string }
   | { kind: "booking_taken"; requested: string; nearestFree: string[] }
@@ -269,6 +270,40 @@ function flag(reason: string, checks: Check[], situation: Situation = "other"): 
 // A greeting gets a fixed welcome. A long message that Jev called a greeting probably
 // holds a request too, so it goes to a person instead.
 const MAX_GREETING_CHARS = 60;
+
+// Words a thank-you, a simple "ok" or a goodbye is made of. Jev proposes "closing", but
+// code decides: every word must be on this list, so "ok book it" or "yes please" never
+// counts and still goes to a person.
+const CLOSING_WORDS = new Set(
+  (
+    "ok okay okey okk k kk alright all right great perfect awesome nice cool good fine noted got it understood " +
+    "thanks thank thankyou thx ty tysm cheers you so very much a lot appreciate appreciated again " +
+    "bye goodbye see later take care sir dr doctor team " +
+    "شكرا شكر جزيلا مشكور مشكورة تسلم يعطيك العافية تمام حسنا اوكي اوك ماشي طيب ممتاز رائع الى اللقاء مع السلامة الله يعافيك"
+  ).split(" "),
+);
+
+export function isOnlyClosing(message: string): boolean {
+  if (message.length > MAX_GREETING_CHARS) return false;
+  const words = message
+    .toLowerCase()
+    .replace(/[\u064B-\u065F\u0640]/g, "") // Arabic vowel marks and stretching
+    .replace(/[أإآ]/g, "ا")
+    .replace(/(.)\1{2,}/g, "$1") // "thankssss" -> "thanks"
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  return words.length > 0 && words.every((w) => CLOSING_WORDS.has(w));
+}
+
+function closingRule(message: string, checks: Check[]): Decision {
+  if (!isOnlyClosing(message)) {
+    checks.push({ label: "Only a thank-you or goodbye?", result: "No, there may be more in the message", status: "flag" });
+    return flag("The message looks like a thank-you but may hold a request", checks);
+  }
+  checks.push({ label: "Only a thank-you or goodbye?", result: "Yes", status: "pass" });
+  return { action: "answer", reason: null, situation: null, facts: { kind: "closing" }, checks };
+}
 const MAX_TIMES_OFFERED = 5; // free times listed when the customer names no full day and time
 
 function greetingRule(message: string, checks: Check[]): Decision {
@@ -466,12 +501,14 @@ export function applyClinicRules(
   checks.push({
     label: "What does the customer want?",
     result: intent.answer.replaceAll("_", " "),
-    status: ["greeting", "price_question", "booking", "opening_hours"].includes(intent.answer) ? "pass" : "flag",
+    status: ["greeting", "closing", "price_question", "booking", "opening_hours"].includes(intent.answer) ? "pass" : "flag",
   });
 
   switch (intent.answer) {
     case "greeting":
       return greetingRule(message, checks);
+    case "closing":
+      return closingRule(message, checks);
     case "price_question":
       return priceRule(message, checks);
     case "booking":
@@ -483,8 +520,11 @@ export function applyClinicRules(
     case "complaint":
       return flag("The customer is making a complaint", checks, "complaint");
     case "other":
+      // Jev often says "other" or "not sure" for a plain "ok" or "thanks"; code recognises those.
+      if (isOnlyClosing(message)) return closingRule(message, checks);
       return flag("The request is not something the rules cover", checks);
     default: // "not sure", including any answer under the confidence threshold
+      if (isOnlyClosing(message)) return closingRule(message, checks);
       return flag("The message was not clear enough to act on", checks);
   }
 }
