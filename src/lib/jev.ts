@@ -8,7 +8,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { choice, TypeSafeClient } from "@typesafe-ai/sdk";
 import { z } from "zod";
-import { CANCEL_OR_CHANGE_WORDS, URGENT_WORDS } from "./clinic";
+import { CANCEL_OR_CHANGE_WORDS, isOnlyClosing, URGENT_WORDS } from "./clinic";
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -38,6 +38,7 @@ const QUESTIONS = {
       opening_hours: "They ask when the clinic is open",
       complaint: "They are unhappy about something that already happened",
       greeting: "Only a greeting such as hello, hi, good morning or salam, with no question or request",
+      closing: "Only a thank-you, a simple acknowledgement such as ok or great, or a goodbye, with no question or request",
       emergency: "Pain, swelling, bleeding or a broken tooth",
       other: "Something else that fits none of the other options",
       not_sure: "The message is too unclear to tell",
@@ -279,6 +280,7 @@ function classifyByKeywords(message: string): Classification {
   const greetingOnly =
     /^(?:hi+|hello+|hey+|hiya|good (?:morning|afternoon|evening)|(?:as|assalam\w*|salam\w*|salaam\w*)(?: ?alaikum| ?alaykum)?|السلام عليكم|سلام عليكم|مرحبا|اهلا|أهلا|هلا|صباح الخير|مساء الخير)(?:\s+(?:there|team|dr|doctor|all))?$/i;
   if (greetingOnly.test(t.replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim())) intent = "greeting";
+  else if (isOnlyClosing(message)) intent = "closing";
   else if (has(URGENT_WORDS)) intent = "emergency";
   else if (has(/\b(?:complain\w*|unhappy|terrible|awful|worst|refund|rude|disappointed)\b/)) intent = "complaint";
   else if (has(CANCEL_OR_CHANGE_WORDS)) intent = "booking";

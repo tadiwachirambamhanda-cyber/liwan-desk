@@ -245,8 +245,8 @@ async function handle(request: Request, steps: Step[]): Promise<Response> {
       : {
           label: "Sent the reply",
           detail:
-            decision.facts?.kind === "greeting"
-              ? "A fixed welcome, written by code (no Claude call needed)"
+            decision.facts?.kind === "greeting" || decision.facts?.kind === "closing"
+              ? "A fixed reply, written by code (no Claude call needed)"
               : "The reply passed every check",
         },
   );

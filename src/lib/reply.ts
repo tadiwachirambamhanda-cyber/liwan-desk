@@ -74,6 +74,21 @@ export function greetingReplyFor(customerMessage: string): string {
   return `${opener}, and welcome to Liwan Dental! I can help with prices, opening hours and booking an appointment. What can I do for you?`;
 }
 
+// The reply to a plain thank-you, "ok" or goodbye. Fixed text, so it never fails or hands over.
+// There is no memory of the conversation, so "ok" gets a reply that fits whatever it answered.
+export function closingReplyFor(customerMessage: string): string {
+  const thanks = /thank|thx|\bty\b|tysm|cheers|شكر|مشكور|تسلم|يعطيك/i.test(customerMessage);
+  const bye = /\bbye\b|goodbye|see you|السلامة|اللقاء/i.test(customerMessage);
+  if (/[\u0600-\u06FF]/.test(customerMessage)) {
+    if (thanks) return "العفو! إذا احتجت أي شيء آخر، فأنا هنا للمساعدة.";
+    if (bye) return "مع السلامة! نتمنى لك يوماً سعيداً.";
+    return "تمام! إذا احتجت أي مساعدة أخرى أو أردت اختيار موعد، فأخبرني.";
+  }
+  if (thanks) return "You're welcome! If there's anything else I can help with, just let me know.";
+  if (bye) return "Goodbye, and take care! We're here whenever you need us.";
+  return "Great! If there's anything else I can help with, or you'd like to pick a time, just let me know.";
+}
+
 export function holdingReplyFor(situation: Situation | null, customerMessage: string): string {
   const reply = HOLDING_REPLIES[situation ?? "other"];
   return /[\u0600-\u06FF]/.test(customerMessage) ? reply.ar : reply.en;
@@ -111,6 +126,7 @@ export type ReplyOutcome = {
 function factsToText(f: Facts): string {
   switch (f.kind) {
     case "greeting":
+    case "closing":
       return "";
     case "price":
       return f.treatments
@@ -139,6 +155,7 @@ function factsToText(f: Facts): string {
 
 const INTENT_FOR: Record<Facts["kind"], string> = {
   greeting: "The customer greeted us.",
+  closing: "The customer said thanks, ok or goodbye.",
   price: "The customer asked about a price.",
   booking_free: "The customer asked to book an appointment.",
   booking_taken: "The customer asked to book an appointment.",
@@ -443,6 +460,8 @@ function templateReply(f: Facts): string {
   switch (f.kind) {
     case "greeting":
       return greetingReplyFor("hello");
+    case "closing":
+      return closingReplyFor("ok");
     case "price":
       return factsToText(f);
     case "booking_free":
@@ -487,6 +506,7 @@ export async function buildReply(customerMessage: string, decision: Decision): P
 
   const facts = decision.facts;
   if (facts.kind === "greeting") return { reply: greetingReplyFor(customerMessage), handoff: null, writer: null };
+  if (facts.kind === "closing") return { reply: closingReplyFor(customerMessage), handoff: null, writer: null };
   if (isTemplatesMode()) return buildTemplateReply(customerMessage, facts);
   const started = performance.now();
   const writer: WriterResult = {
