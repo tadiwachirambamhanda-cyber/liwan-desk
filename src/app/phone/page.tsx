@@ -2,9 +2,136 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Step } from "../api/whatsapp/route";
+import type { Classification } from "@/lib/jev";
+import type { Decision } from "@/lib/clinic";
+import type { WriterResult } from "@/lib/reply";
 
-type Bubble = { id: string; from: "customer" | "agent"; text: string };
-type StepGroup = { id: string; message: string; steps: Step[] };
+type Bubble = { id: string; from: "customer" | "agent" | "receptionist"; text: string };
+type StepGroup = {
+  id: string;
+  message: string;
+  steps: Step[];
+  classification?: Classification;
+  decision?: Decision;
+  writer?: WriterResult | null;
+};
+type ThreadLine = { who: "customer" | "receptionist"; text: string };
+type Handoff = { id: string; reason: string; thread: ThreadLine[]; resolved: boolean; urgent: boolean };
+
+function WriterView({ w, held }: { w: WriterResult; held: boolean }) {
+  return (
+    <div className="mt-3 rounded-md bg-neutral-50 p-3 text-sm">
+      <p className="font-medium text-neutral-900">
+        {w.model === "templates" ? "Template reply (no AI)" : "Claude reply"}{" "}
+        {w.model !== "templates" && <span className="font-normal text-neutral-500">({w.model})</span>}
+      </p>
+      {w.error ? (
+        <p className="mt-2 text-red-700">{w.error}</p>
+      ) : (
+        <>
+          <p className="mt-2 whitespace-pre-wrap rounded bg-white p-2 text-neutral-800">
+            {w.draft}
+          </p>
+          <ul className="mt-2 space-y-1">
+            {w.checks.map((c) => (
+              <li key={c.name} className="flex gap-2">
+                <span className={c.passed ? "text-green-700" : "font-bold text-red-700"}>
+                  {c.passed ? "✓" : "✗"}
+                </span>
+                <span>
+                  <span className="text-neutral-600">{c.name}</span>{" "}
+                  <span className={c.passed ? "text-neutral-500" : "font-medium text-red-700"}>
+                    {c.detail}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      <p className="mt-2 text-xs text-neutral-500">
+        {w.ms} ms · {formatCost(w.costUsd)}
+        {w.inputTokens !== null && ` · ${w.inputTokens} in / ${w.outputTokens ?? 0} out tokens`}
+      </p>
+      <p className={`mt-1 font-medium ${held ? "text-amber-700" : "text-green-700"}`}>
+        {held ? "Held back. A holding reply was sent instead." : "Sent to the phone."}
+      </p>
+    </div>
+  );
+}
+
+function DecisionView({ d }: { d: Decision }) {
+  const mark = { pass: "✓", flag: "⚑", info: "•" } as const;
+  const color = { pass: "text-green-700", flag: "text-amber-700", info: "text-neutral-500" } as const;
+  return (
+    <div className="mt-3 rounded-md bg-neutral-50 p-3 text-sm">
+      <p className="font-medium text-neutral-900">Clinic rules</p>
+      <ul className="mt-2 space-y-1">
+        {d.checks.map((c, i) => (
+          <li key={i} className="flex gap-2">
+            <span className={color[c.status]}>{mark[c.status]}</span>
+            <span>
+              <span className="text-neutral-600">{c.label}</span>{" "}
+              <span className="font-medium text-neutral-900">{c.result}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className={`mt-2 font-medium ${d.action === "flag" ? "text-amber-700" : "text-green-700"}`}>
+        {d.action === "flag" ? `Flagged for a person: ${d.reason}` : "Facts found by the rules"}
+      </p>
+    </div>
+  );
+}
+
+function formatCost(usd: number | null): string {
+  if (usd === null) return "cost unknown";
+  if (usd < 0.0001) return "under $0.0001";
+  return `$${usd.toFixed(usd < 0.01 ? 5 : 4)}`;
+}
+
+function ClassificationView({ c }: { c: Classification }) {
+  const engine = c.engine === "jev" ? "Jev" : c.engine === "claude" ? "Claude" : "Keywords";
+  return (
+    <div className="mt-3 rounded-md bg-neutral-50 p-3 text-sm">
+      <p className="font-medium text-neutral-900">
+        {engine} <span className="font-normal text-neutral-500">({c.model})</span>
+      </p>
+      {c.note && <p className="mt-1 text-amber-700">{c.note}</p>}
+      {c.ok ? (
+        <>
+          <ul className="mt-2 space-y-1">
+            {c.answers.map((a) => (
+              <li key={a.question} className="flex flex-wrap items-baseline justify-between gap-x-3">
+                <span className="text-neutral-600">{a.asked}</span>
+                <span className={a.unsure ? "font-medium text-amber-700" : "font-medium text-neutral-900"}>
+                  {a.answer.replaceAll("_", " ")}{" "}
+                  <span className="font-normal text-neutral-500">
+                    {Math.round(a.confidence * 100)}%
+                  </span>
+                  {a.unsure && (
+                    <span className="font-normal text-neutral-500">
+                      {" "}
+                      (picked {a.label.replaceAll("_", " ")})
+                    </span>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-xs text-neutral-500">
+            {c.ms} ms · {formatCost(c.costUsd)}
+            {c.inputTokens !== null && ` · ${c.inputTokens} input tokens`}
+          </p>
+        </>
+      ) : (
+        <p className="mt-2 text-red-700">
+          {c.error} <span className="text-neutral-500">· {c.ms} ms</span>
+        </p>
+      )}
+    </div>
+  );
+}
 
 // A fake customer phone number and business number for the simulator.
 const CUSTOMER_NUMBER = "15551234567";
@@ -49,7 +176,26 @@ export default function PhonePage() {
   const [groups, setGroups] = useState<StepGroup[]>([]);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [handoffs, setHandoffs] = useState<Handoff[]>([]);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const chatEnd = useRef<HTMLDivElement>(null);
+
+  // The receptionist answers a handed-over conversation. Their reply appears on the phone.
+  function answerAsReceptionist(h: Handoff) {
+    const reply = (drafts[h.id] ?? "").trim();
+    if (!reply) return;
+    setBubbles((b) => [...b, { id: `${h.id}-person-${b.length}`, from: "receptionist", text: reply }]);
+    setHandoffs((list) =>
+      list.map((x) => (x.id === h.id ? { ...x, thread: [...x.thread, { who: "receptionist", text: reply }] } : x)),
+    );
+    setDrafts((d) => ({ ...d, [h.id]: "" }));
+  }
+
+  // While a conversation is with a person, the agent stays quiet.
+  const openHandoff = [...handoffs].reverse().find((h) => !h.resolved);
+  function handBack(h: Handoff) {
+    setHandoffs((list) => list.map((x) => (x.id === h.id ? { ...x, resolved: true } : x)));
+  }
 
   useEffect(() => {
     chatEnd.current?.scrollIntoView({ behavior: "smooth" });
@@ -64,15 +210,57 @@ export default function PhonePage() {
     setBubbles((b) => [...b, { id: messageId, from: "customer", text: body }]);
     setText("");
     setSending(true);
+    const open = openHandoff;
 
     try {
       const res = await fetch("/api/whatsapp", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(open ? { "X-Conversation-With-Person": "true" } : {}),
+        },
         body: JSON.stringify(buildPayload(body, messageId)),
       });
-      const data: { steps: Step[]; reply: string | null } = await res.json();
-      setGroups((g) => [...g, { id: messageId, message: body, steps: data.steps }]);
+      const data: {
+        steps?: Step[];
+        reply: string | null;
+        classification?: Classification;
+        decision?: Decision;
+        writer?: WriterResult | null;
+        handoff?: { reason: string; situation?: string } | null;
+        withPerson?: boolean;
+      } = await res.json();
+      setGroups((g) => [
+        ...g,
+        {
+          id: messageId,
+          message: body,
+          steps: Array.isArray(data.steps)
+            ? data.steps
+            : [{ label: "Error", detail: `The server answered with HTTP ${res.status}` }],
+          classification: data.classification,
+          decision: data.decision,
+          writer: data.writer,
+        },
+      ]);
+      if (open && data.withPerson) {
+        // The customer wrote again while a person is handling it: it joins that conversation.
+        setHandoffs((list) =>
+          list.map((x) => (x.id === open.id ? { ...x, thread: [...x.thread, { who: "customer", text: body }] } : x)),
+        );
+      } else if (data.handoff) {
+        const { reason, situation } = data.handoff;
+        setHandoffs((list) => [
+          ...list,
+          {
+            id: messageId,
+            reason,
+            thread: [{ who: "customer", text: body }],
+            resolved: false,
+            urgent: situation === "emergency",
+          },
+        ]);
+      }
       if (data.reply) {
         setBubbles((b) => [...b, { id: `${messageId}-reply`, from: "agent", text: data.reply! }]);
       }
@@ -82,7 +270,7 @@ export default function PhonePage() {
         {
           id: messageId,
           message: body,
-          steps: [{ label: "Error", detail: "Could not reach /api/whatsapp" }],
+          steps: [{ label: "Error", detail: "Could not reach /api/whatsapp or read its answer" }],
         },
       ]);
     } finally {
@@ -121,6 +309,9 @@ export default function PhonePage() {
                     b.from === "customer" ? "bg-[#d9fdd3]" : "bg-white"
                   }`}
                 >
+                  {b.from === "receptionist" && (
+                    <span className="mb-0.5 block text-xs font-medium text-[#075e54]">Receptionist</span>
+                  )}
                   {b.text}
                 </p>
               </div>
@@ -148,6 +339,82 @@ export default function PhonePage() {
 
       {/* Right: what the agent did */}
       <section className="mx-auto w-full max-w-md">
+        {handoffs.length > 0 && (
+          <div className="mb-6">
+            <h2 className="mb-3 text-lg font-semibold text-neutral-900">Handed to a person</h2>
+            <ul className="space-y-3">
+              {handoffs.map((h) => (
+                <li
+                  key={h.id}
+                  className={`rounded-lg border p-4 text-sm ${
+                    h.resolved
+                      ? "border-neutral-200 bg-white"
+                      : h.urgent
+                        ? "border-red-400 bg-red-50"
+                        : "border-amber-300 bg-amber-50"
+                  }`}
+                >
+                  <p className={h.resolved ? "text-neutral-500" : h.urgent ? "text-red-800" : "text-amber-800"}>
+                    {h.urgent && !h.resolved && (
+                      <span className="mr-2 rounded bg-red-600 px-1.5 py-0.5 text-xs font-bold text-white">URGENT</span>
+                    )}
+                    {h.reason}
+                  </p>
+                  <div className="mt-2 space-y-1">
+                    {h.thread.map((line, i) => (
+                      <p
+                        key={i}
+                        className={`rounded p-2 ${line.who === "customer" ? "bg-white text-neutral-900" : "bg-[#d9fdd3] text-neutral-800"}`}
+                      >
+                        <span className="text-xs font-medium text-[#075e54]">
+                          {line.who === "customer" ? "Customer: " : "Receptionist: "}
+                        </span>
+                        {line.text}
+                      </p>
+                    ))}
+                  </div>
+                  {h.resolved ? (
+                    <p className="mt-2 text-xs font-medium text-green-700">Handed back to the agent</p>
+                  ) : (
+                    <>
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          answerAsReceptionist(h);
+                        }}
+                        className="mt-3 flex gap-2"
+                      >
+                        <input
+                          value={drafts[h.id] ?? ""}
+                          onChange={(e) => setDrafts((d) => ({ ...d, [h.id]: e.target.value }))}
+                          placeholder="Reply as the receptionist"
+                          className="min-w-0 flex-1 rounded border border-neutral-300 bg-white px-3 py-1.5 text-neutral-900 outline-none"
+                        />
+                        <button
+                          type="submit"
+                          disabled={!(drafts[h.id] ?? "").trim()}
+                          className="rounded bg-[#075e54] px-3 py-1.5 font-medium text-white disabled:opacity-50"
+                        >
+                          Reply
+                        </button>
+                      </form>
+                      <button
+                        type="button"
+                        onClick={() => handBack(h)}
+                        className="mt-2 text-xs font-medium text-neutral-600 underline"
+                      >
+                        Done, hand back to the agent
+                      </button>
+                      <p className="mt-1 text-xs text-neutral-500">
+                        The agent stays quiet on this conversation until you do.
+                      </p>
+                    </>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <h2 className="mb-3 text-lg font-semibold text-neutral-900">What the agent did</h2>
         {groups.length === 0 ? (
           <p className="text-sm text-neutral-500">
@@ -168,6 +435,14 @@ export default function PhonePage() {
                     </li>
                   ))}
                 </ol>
+                {g.classification && <ClassificationView c={g.classification} />}
+                {g.decision && <DecisionView d={g.decision} />}
+                {g.writer && (
+                  <WriterView
+                    w={g.writer}
+                    held={Boolean(g.writer.error) || g.writer.checks.some((c) => !c.passed)}
+                  />
+                )}
               </li>
             ))}
           </ol>
