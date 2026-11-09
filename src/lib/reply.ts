@@ -9,6 +9,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { Decision, Facts } from "./clinic";
+import { isTemplatesMode } from "./jev";
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -361,6 +362,47 @@ function hold(reason: string, writer: WriterResult | null): ReplyOutcome {
   return { reply: HOLDING_REPLY, handoff: { reason }, writer };
 }
 
+// ---------------------------------------------------------------------------
+// Templates mode (AI_MODE=templates): replies written by code, no Claude call.
+// English only, so a message in Arabic goes to a person instead.
+// ---------------------------------------------------------------------------
+
+function templateReply(f: Facts): string {
+  switch (f.kind) {
+    case "price":
+      return factsToText(f);
+    case "booking_free":
+      return `${f.requested} is free. Would you like to book it?`;
+    case "booking_taken":
+      return `Sorry, that time is not available. The nearest free times are ${f.nearestFree.join(" or ")}. Would one of those work?`;
+    case "hours":
+      return factsToText(f);
+  }
+}
+
+function buildTemplateReply(customerMessage: string, facts: Facts): ReplyOutcome {
+  const writer: WriterResult = {
+    model: "templates",
+    ms: 0,
+    costUsd: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    draft: null,
+    error: null,
+    checks: [],
+  };
+  if (/[\u0600-\u06FF]/.test(customerMessage)) {
+    writer.error = "Templates mode only writes English";
+    return hold("Templates mode only writes English", writer);
+  }
+  const text = templateReply(facts);
+  writer.draft = text;
+  writer.checks = checkReply(text, facts);
+  const failed = writer.checks.filter((c) => !c.passed);
+  if (failed.length > 0) return hold(`Reply check failed: ${failed.map((c) => c.name).join("; ")}`, writer);
+  return { reply: text, handoff: null, writer };
+}
+
 export async function buildReply(customerMessage: string, decision: Decision): Promise<ReplyOutcome> {
   // Flagged by the clinic rules: no Claude call, a person answers.
   if (decision.action === "flag" || !decision.facts) {
@@ -368,6 +410,7 @@ export async function buildReply(customerMessage: string, decision: Decision): P
   }
 
   const facts = decision.facts;
+  if (isTemplatesMode()) return buildTemplateReply(customerMessage, facts);
   const started = performance.now();
   const writer: WriterResult = {
     model: WRITER_MODEL,

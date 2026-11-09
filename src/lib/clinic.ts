@@ -53,11 +53,11 @@ const UNLISTED_TREATMENTS = [
 
 // Words that suggest pain or an emergency. Checked before any price, booking or hours
 // answer, so an emergency hidden next to a price word still reaches a person.
-const URGENT_WORDS =
+export const URGENT_WORDS =
   /\b(?:bleed(?:ing)?|blood|swell(?:ing)?|swollen|pain(?:ful)?|hurt(?:s|ing)?|ache|aching|toothache|broke|broken|chipped|cracked|knocked out|abscess|infect(?:ed|ion)|fever|emergency|urgent(?:ly)?)\b|ألم|وجع|نزيف|تورم|منتفخ|كسر|مكسور|طارئ|عاجل/;
 
 // Cancelling or changing is not a new booking.
-const CANCEL_OR_CHANGE_WORDS =
+export const CANCEL_OR_CHANGE_WORDS =
   /\b(?:cancel(?:l?ed|l?ing|lation)?|resched\w*|postpone\w*|change (?:my|the|our) (?:appointment|booking|time|slot)|move (?:my|the) (?:appointment|booking))\b|إلغاء|الغاء|تغيير الموعد|تأجيل|أجل الموعد/;
 
 // A word the customer says they do NOT want ("no whitening, just cleaning").

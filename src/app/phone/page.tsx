@@ -15,13 +15,15 @@ type StepGroup = {
   decision?: Decision;
   writer?: WriterResult | null;
 };
-type Handoff = { id: string; message: string; reason: string; replies: string[] };
+type ThreadLine = { who: "customer" | "receptionist"; text: string };
+type Handoff = { id: string; reason: string; thread: ThreadLine[]; resolved: boolean };
 
 function WriterView({ w, held }: { w: WriterResult; held: boolean }) {
   return (
     <div className="mt-3 rounded-md bg-neutral-50 p-3 text-sm">
       <p className="font-medium text-neutral-900">
-        Claude reply <span className="font-normal text-neutral-500">({w.model})</span>
+        {w.model === "templates" ? "Template reply (no AI)" : "Claude reply"}{" "}
+        {w.model !== "templates" && <span className="font-normal text-neutral-500">({w.model})</span>}
       </p>
       {w.error ? (
         <p className="mt-2 text-red-700">{w.error}</p>
@@ -89,7 +91,7 @@ function formatCost(usd: number | null): string {
 }
 
 function ClassificationView({ c }: { c: Classification }) {
-  const engine = c.engine === "jev" ? "Jev" : "Claude";
+  const engine = c.engine === "jev" ? "Jev" : c.engine === "claude" ? "Claude" : "Keywords";
   return (
     <div className="mt-3 rounded-md bg-neutral-50 p-3 text-sm">
       <p className="font-medium text-neutral-900">
@@ -183,8 +185,16 @@ export default function PhonePage() {
     const reply = (drafts[h.id] ?? "").trim();
     if (!reply) return;
     setBubbles((b) => [...b, { id: `${h.id}-person-${b.length}`, from: "receptionist", text: reply }]);
-    setHandoffs((list) => list.map((x) => (x.id === h.id ? { ...x, replies: [...x.replies, reply] } : x)));
+    setHandoffs((list) =>
+      list.map((x) => (x.id === h.id ? { ...x, thread: [...x.thread, { who: "receptionist", text: reply }] } : x)),
+    );
     setDrafts((d) => ({ ...d, [h.id]: "" }));
+  }
+
+  // While a conversation is with a person, the agent stays quiet.
+  const openHandoff = [...handoffs].reverse().find((h) => !h.resolved);
+  function handBack(h: Handoff) {
+    setHandoffs((list) => list.map((x) => (x.id === h.id ? { ...x, resolved: true } : x)));
   }
 
   useEffect(() => {
@@ -200,35 +210,50 @@ export default function PhonePage() {
     setBubbles((b) => [...b, { id: messageId, from: "customer", text: body }]);
     setText("");
     setSending(true);
+    const open = openHandoff;
 
     try {
       const res = await fetch("/api/whatsapp", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(open ? { "X-Conversation-With-Person": "true" } : {}),
+        },
         body: JSON.stringify(buildPayload(body, messageId)),
       });
       const data: {
-        steps: Step[];
+        steps?: Step[];
         reply: string | null;
         classification?: Classification;
         decision?: Decision;
         writer?: WriterResult | null;
         handoff?: { reason: string } | null;
+        withPerson?: boolean;
       } = await res.json();
       setGroups((g) => [
         ...g,
         {
           id: messageId,
           message: body,
-          steps: data.steps,
+          steps: Array.isArray(data.steps)
+            ? data.steps
+            : [{ label: "Error", detail: `The server answered with HTTP ${res.status}` }],
           classification: data.classification,
           decision: data.decision,
           writer: data.writer,
         },
       ]);
-      if (data.handoff) {
+      if (open && data.withPerson) {
+        // The customer wrote again while a person is handling it: it joins that conversation.
+        setHandoffs((list) =>
+          list.map((x) => (x.id === open.id ? { ...x, thread: [...x.thread, { who: "customer", text: body }] } : x)),
+        );
+      } else if (data.handoff) {
         const reason = data.handoff.reason;
-        setHandoffs((list) => [...list, { id: messageId, message: body, reason, replies: [] }]);
+        setHandoffs((list) => [
+          ...list,
+          { id: messageId, reason, thread: [{ who: "customer", text: body }], resolved: false },
+        ]);
       }
       if (data.reply) {
         setBubbles((b) => [...b, { id: `${messageId}-reply`, from: "agent", text: data.reply! }]);
@@ -239,7 +264,7 @@ export default function PhonePage() {
         {
           id: messageId,
           message: body,
-          steps: [{ label: "Error", detail: "Could not reach /api/whatsapp" }],
+          steps: [{ label: "Error", detail: "Could not reach /api/whatsapp or read its answer" }],
         },
       ]);
     } finally {
@@ -313,36 +338,63 @@ export default function PhonePage() {
             <h2 className="mb-3 text-lg font-semibold text-neutral-900">Handed to a person</h2>
             <ul className="space-y-3">
               {handoffs.map((h) => (
-                <li key={h.id} className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm">
-                  <p className="font-medium text-neutral-900">&ldquo;{h.message}&rdquo;</p>
-                  <p className="mt-1 text-amber-800">{h.reason}</p>
-                  {h.replies.map((r, i) => (
-                    <p key={i} className="mt-2 rounded bg-white p-2 text-neutral-800">
-                      <span className="text-xs font-medium text-[#075e54]">Receptionist: </span>
-                      {r}
-                    </p>
-                  ))}
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      answerAsReceptionist(h);
-                    }}
-                    className="mt-3 flex gap-2"
-                  >
-                    <input
-                      value={drafts[h.id] ?? ""}
-                      onChange={(e) => setDrafts((d) => ({ ...d, [h.id]: e.target.value }))}
-                      placeholder="Reply as the receptionist"
-                      className="min-w-0 flex-1 rounded border border-neutral-300 bg-white px-3 py-1.5 text-neutral-900 outline-none"
-                    />
-                    <button
-                      type="submit"
-                      disabled={!(drafts[h.id] ?? "").trim()}
-                      className="rounded bg-[#075e54] px-3 py-1.5 font-medium text-white disabled:opacity-50"
-                    >
-                      Reply
-                    </button>
-                  </form>
+                <li
+                  key={h.id}
+                  className={`rounded-lg border p-4 text-sm ${
+                    h.resolved ? "border-neutral-200 bg-white" : "border-amber-300 bg-amber-50"
+                  }`}
+                >
+                  <p className={h.resolved ? "text-neutral-500" : "text-amber-800"}>{h.reason}</p>
+                  <div className="mt-2 space-y-1">
+                    {h.thread.map((line, i) => (
+                      <p
+                        key={i}
+                        className={`rounded p-2 ${line.who === "customer" ? "bg-white text-neutral-900" : "bg-[#d9fdd3] text-neutral-800"}`}
+                      >
+                        <span className="text-xs font-medium text-[#075e54]">
+                          {line.who === "customer" ? "Customer: " : "Receptionist: "}
+                        </span>
+                        {line.text}
+                      </p>
+                    ))}
+                  </div>
+                  {h.resolved ? (
+                    <p className="mt-2 text-xs font-medium text-green-700">Handed back to the agent</p>
+                  ) : (
+                    <>
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          answerAsReceptionist(h);
+                        }}
+                        className="mt-3 flex gap-2"
+                      >
+                        <input
+                          value={drafts[h.id] ?? ""}
+                          onChange={(e) => setDrafts((d) => ({ ...d, [h.id]: e.target.value }))}
+                          placeholder="Reply as the receptionist"
+                          className="min-w-0 flex-1 rounded border border-neutral-300 bg-white px-3 py-1.5 text-neutral-900 outline-none"
+                        />
+                        <button
+                          type="submit"
+                          disabled={!(drafts[h.id] ?? "").trim()}
+                          className="rounded bg-[#075e54] px-3 py-1.5 font-medium text-white disabled:opacity-50"
+                        >
+                          Reply
+                        </button>
+                      </form>
+                      <button
+                        type="button"
+                        onClick={() => handBack(h)}
+                        className="mt-2 text-xs font-medium text-neutral-600 underline"
+                      >
+                        Done, hand back to the agent
+                      </button>
+                      <p className="mt-1 text-xs text-neutral-500">
+                        The agent stays quiet on this conversation until you do.
+                      </p>
+                    </>
+                  )}
                 </li>
               ))}
             </ul>

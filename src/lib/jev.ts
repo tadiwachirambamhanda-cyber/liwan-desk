@@ -8,6 +8,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { choice, TypeSafeClient } from "@typesafe-ai/sdk";
 import { z } from "zod";
+import { CANCEL_OR_CHANGE_WORDS, URGENT_WORDS } from "./clinic";
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -82,7 +83,7 @@ export type ClassifiedAnswer = {
 export type Classification =
   | {
       ok: true;
-      engine: "jev" | "claude";
+      engine: "jev" | "claude" | "templates";
       model: string;
       note: string | null;
       ms: number;
@@ -90,7 +91,7 @@ export type Classification =
       inputTokens: number | null;
       answers: ClassifiedAnswer[];
     }
-  | { ok: false; engine: "jev" | "claude"; model: string; note: string | null; ms: number; error: string };
+  | { ok: false; engine: "jev" | "claude" | "templates"; model: string; note: string | null; ms: number; error: string };
 
 function judge(
   question: QuestionName,
@@ -259,8 +260,49 @@ async function askClaude(message: string, note: string): Promise<Classification>
 // The one function the rest of the app calls
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Templates mode (AI_MODE=templates): no AI at all, so the app still runs if a key fails.
+// Plain keywords sort the message. Every answer is certain or "not stated", so the
+// confidence is 1.
+// ---------------------------------------------------------------------------
+
+export function isTemplatesMode(): boolean {
+  return process.env.AI_MODE?.trim().toLowerCase() === "templates";
+}
+
+function classifyByKeywords(message: string): Classification {
+  const t = message.toLowerCase();
+  const has = (re: RegExp) => re.test(t);
+
+  let intent: keyof typeof QUESTIONS.intent.options = "other";
+  if (has(URGENT_WORDS)) intent = "emergency";
+  else if (has(/\b(?:complain\w*|unhappy|terrible|awful|worst|refund|rude|disappointed)\b/)) intent = "complaint";
+  else if (has(CANCEL_OR_CHANGE_WORDS)) intent = "booking";
+  else if (has(/\b(?:how much|price|prices|cost|costs|fee|fees|aed|dirhams?)\b|سعر|كم|تكلفة|بكم/)) intent = "price_question";
+  else if (has(/\b(?:book|booking|appointment|reserve|slot|schedule)\b|موعد|حجز/)) intent = "booking";
+  else if (has(/\b(?:open|opening|hours|close|closing|closed|what time|when do you)\b|ساعات|دوام|مفتوح|تفتح/)) intent = "opening_hours";
+
+  const language = /[\u0600-\u06FF]/.test(message) ? "arabic" : "english";
+  const person = has(/\b(?:human|real person|a person|receptionist|someone|somebody|speak to|talk to|call me|manager)\b|موظف|شخص/)
+    ? "yes"
+    : "not_stated";
+
+  return {
+    ok: true,
+    engine: "templates",
+    model: "keywords",
+    note: "AI_MODE=templates: plain keywords sorted this message, no AI was used.",
+    ms: 0,
+    costUsd: 0,
+    inputTokens: 0,
+    answers: [judge("intent", intent, 1), judge("language", language, 1), judge("wants_person", person, 1)],
+  };
+}
+
 export async function classifyMessage(message: string): Promise<Classification> {
-  const result = process.env.TYPESAFE_API_KEY?.trim()
+  const result = isTemplatesMode()
+    ? classifyByKeywords(message)
+    : process.env.TYPESAFE_API_KEY?.trim()
     ? await askJev(message)
     : await askClaude(message, "TYPESAFE_API_KEY is empty, so Claude answered the questions instead of Jev.");
 
