@@ -271,6 +271,7 @@ export async function classifyMessage(message: string): Promise<Classification> 
       engine: result.engine,
       ms: result.ms,
       ok: result.ok,
+      error: result.ok ? undefined : result.error.split(":")[0], // the error's name only
       answers: result.ok
         ? result.answers.map((a) => ({ q: a.question, answer: a.answer, confidence: a.confidence }))
         : undefined,
