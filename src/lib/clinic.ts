@@ -94,6 +94,8 @@ export type Facts =
   | { kind: "price"; treatments: { name: string; priceAed: number; from: boolean }[] }
   | { kind: "booking_free"; requested: string }
   | { kind: "booking_taken"; requested: string; nearestFree: string[] }
+  // The customer wants to book but did not give a full day and time: offer what is free.
+  | { kind: "booking_options"; times: string[]; day: string | null; dayIsFull: boolean }
   | { kind: "hours"; hours: { day: string; open: string; close: string }[]; openNow?: boolean };
 
 // Why a person is needed. It decides how the holding reply sounds.
@@ -267,6 +269,7 @@ function flag(reason: string, checks: Check[], situation: Situation = "other"): 
 // A greeting gets a fixed welcome. A long message that Jev called a greeting probably
 // holds a request too, so it goes to a person instead.
 const MAX_GREETING_CHARS = 60;
+const MAX_TIMES_OFFERED = 5; // free times listed when the customer names no full day and time
 
 function greetingRule(message: string, checks: Check[]): Decision {
   if (message.length > MAX_GREETING_CHARS) {
@@ -346,9 +349,33 @@ function bookingRule(message: string, now: Date, checks: Check[]): Decision {
   const day = readDay(message, now);
   const time = readTime(message);
   if (!day || !time) {
+    // No full day and time: offer what is free instead of giving up.
     const missing = !day && !time ? "day or time" : !day ? "day" : "time";
-    checks.push({ label: "Read the requested day and time", result: `Could not find a ${missing}`, status: "flag" });
-    return flag(`The booking request has no clear ${missing}`, checks, "booking_unclear");
+    checks.push({ label: "Read the requested day and time", result: `No ${missing} given, so free times will be offered`, status: "info" });
+    const upcoming = freeSlots(now);
+    const onDay = day ? upcoming.filter((slot) => new Date(slot).getUTCDay() === day.day) : [];
+    const times = (onDay.length > 0 ? onDay : upcoming).slice(0, MAX_TIMES_OFFERED).map(describe);
+    if (times.length === 0) {
+      checks.push({ label: "Free times to offer", result: "No free times left this week", status: "flag" });
+      return flag("No free times are left this week", checks, "booking_unclear");
+    }
+    checks.push({
+      label: onDay.length > 0 ? `Free times on ${DAY_NAMES[day!.day]}` : "Next free times",
+      result: times.join(", "),
+      status: "pass",
+    });
+    return {
+      action: "answer",
+      reason: null,
+      situation: null,
+      facts: {
+        kind: "booking_options",
+        times,
+        day: day ? DAY_NAMES[day.day] : null,
+        dayIsFull: Boolean(day) && onDay.length === 0,
+      },
+      checks,
+    };
   }
   const wanted = wallAt(wallNow(now), day.addDays, time);
   checks.push({ label: "Read the requested day and time", result: describe(wanted), status: "pass" });

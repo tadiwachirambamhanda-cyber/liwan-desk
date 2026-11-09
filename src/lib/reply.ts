@@ -120,6 +120,13 @@ function factsToText(f: Facts): string {
       return `The time the customer asked for is free: ${f.requested}.`;
     case "booking_taken":
       return `The time the customer asked for is not available. The two nearest free times are: ${f.nearestFree.join(" and ")}.`;
+    case "booking_options": {
+      const list = f.times.join("; ");
+      if (!f.day) return `The customer did not say when. The next free times are: ${list}.`;
+      return f.dayIsFull
+        ? `There are no free times on ${f.day}. The next free times are: ${list}.`
+        : `The customer did not give a time. The free times on ${f.day} are: ${list}.`;
+    }
     case "hours": {
       const lines = f.hours.map((h) => `${h.day}: ${h.open} to ${h.close}`);
       if (f.openNow !== undefined) {
@@ -135,6 +142,7 @@ const INTENT_FOR: Record<Facts["kind"], string> = {
   price: "The customer asked about a price.",
   booking_free: "The customer asked to book an appointment.",
   booking_taken: "The customer asked to book an appointment.",
+  booking_options: "The customer asked to book an appointment but did not give a full day and time.",
   hours: "The customer asked about opening hours.",
 };
 
@@ -332,7 +340,7 @@ export function checkReply(draft: string, facts: Facts): ReplyCheck[] {
   const allowed = extractTokens(factsText);
   const found = extractTokens(draft);
   const lower = westernDigits(draft).toLowerCase();
-  const isBooking = facts.kind === "booking_free" || facts.kind === "booking_taken";
+  const isBooking = facts.kind === "booking_free" || facts.kind === "booking_taken" || facts.kind === "booking_options";
 
   // 1. Prices
   const badPrices = notIn(found.amounts, allowed.amounts).map((a) => `AED ${a.toLocaleString("en-US")}`);
@@ -441,6 +449,8 @@ function templateReply(f: Facts): string {
       return `${f.requested} is free. Would you like to book it?`;
     case "booking_taken":
       return `Sorry, that time is not available. The nearest free times are ${f.nearestFree.join(" or ")}. Would one of those work?`;
+    case "booking_options":
+      return `${f.dayIsFull ? `We have no free times on ${f.day}. ` : ""}Here are our next free times: ${f.times.join("; ")}. Would one of those work?`;
     case "hours":
       return factsToText(f);
   }
