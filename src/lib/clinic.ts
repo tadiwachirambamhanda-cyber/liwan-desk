@@ -95,9 +95,20 @@ export type Facts =
   | { kind: "booking_taken"; requested: string; nearestFree: string[] }
   | { kind: "hours"; hours: { day: string; open: string; close: string }[]; openNow?: boolean };
 
+// Why a person is needed. It decides how the holding reply sounds.
+export type Situation =
+  | "emergency"
+  | "complaint"
+  | "wants_person"
+  | "cancel_change"
+  | "price_unlisted"
+  | "booking_unclear"
+  | "other";
+
 export type Decision = {
   action: "answer" | "flag";
   reason: string | null; // why a person is needed, when action is "flag"
+  situation: Situation | null; // the kind of handover, when action is "flag"
   facts: Facts | null; // what the code found, when action is "answer"
   checks: Check[];
 };
@@ -248,15 +259,15 @@ function formatPrice(item: Treatment): string {
 // The rules, one per kind of message
 // ---------------------------------------------------------------------------
 
-function flag(reason: string, checks: Check[]): Decision {
-  return { action: "flag", reason, facts: null, checks };
+function flag(reason: string, checks: Check[], situation: Situation = "other"): Decision {
+  return { action: "flag", reason, situation, facts: null, checks };
 }
 
 function priceRule(message: string, checks: Check[]): Decision {
   const unlisted = mentionsUnlistedTreatment(message);
   if (unlisted) {
     checks.push({ label: "Is every treatment on the price list?", result: `"${unlisted}" is not on the list`, status: "flag" });
-    return flag(`A treatment that is not on the price list was mentioned (${unlisted})`, checks);
+    return flag(`A treatment that is not on the price list was mentioned (${unlisted})`, checks, "price_unlisted");
   }
   const { found, skipped } = readTreatments(message);
   if (skipped.length > 0) {
@@ -264,7 +275,7 @@ function priceRule(message: string, checks: Check[]): Decision {
   }
   if (found.length === 0) {
     checks.push({ label: "Is the treatment on the price list?", result: "No treatment from the list was named", status: "flag" });
-    return flag("The treatment is not on the price list", checks);
+    return flag("The treatment is not on the price list", checks, "price_unlisted");
   }
   checks.push({
     label: "Is the treatment on the price list?",
@@ -274,6 +285,7 @@ function priceRule(message: string, checks: Check[]): Decision {
   return {
     action: "answer",
     reason: null,
+    situation: null,
     facts: { kind: "price", treatments: found.map((f) => ({ name: f.name, priceAed: f.aed, from: f.from })) },
     checks,
   };
@@ -286,6 +298,7 @@ function hoursRule(message: string, now: Date, checks: Check[]): Decision {
     return {
       action: "answer",
       reason: null,
+      situation: null,
       facts: { kind: "hours", hours: DAY_NAMES.map((_, d) => hoursEntry(d)) },
       checks,
     };
@@ -301,6 +314,7 @@ function hoursRule(message: string, now: Date, checks: Check[]): Decision {
   return {
     action: "answer",
     reason: null,
+    situation: null,
     facts: { kind: "hours", hours: [hoursEntry(day.day)], openNow },
     checks,
   };
@@ -309,18 +323,18 @@ function hoursRule(message: string, now: Date, checks: Check[]): Decision {
 function bookingRule(message: string, now: Date, checks: Check[]): Decision {
   if (CANCEL_OR_CHANGE_WORDS.test(message.toLowerCase())) {
     checks.push({ label: "New booking?", result: "No, this is a cancel or change request", status: "flag" });
-    return flag("The customer wants to cancel or change an appointment", checks);
+    return flag("The customer wants to cancel or change an appointment", checks, "cancel_change");
   }
   if (countNamedDays(message) > 1) {
     checks.push({ label: "Read the requested day and time", result: "More than one day was named", status: "flag" });
-    return flag("The booking request names more than one day", checks);
+    return flag("The booking request names more than one day", checks, "booking_unclear");
   }
   const day = readDay(message, now);
   const time = readTime(message);
   if (!day || !time) {
     const missing = !day && !time ? "day or time" : !day ? "day" : "time";
     checks.push({ label: "Read the requested day and time", result: `Could not find a ${missing}`, status: "flag" });
-    return flag(`The booking request has no clear ${missing}`, checks);
+    return flag(`The booking request has no clear ${missing}`, checks, "booking_unclear");
   }
   const wanted = wallAt(wallNow(now), day.addDays, time);
   checks.push({ label: "Read the requested day and time", result: describe(wanted), status: "pass" });
@@ -338,6 +352,7 @@ function bookingRule(message: string, now: Date, checks: Check[]): Decision {
     return {
       action: "answer",
       reason: null,
+      situation: null,
       facts: { kind: "booking_free", requested: describe(wanted) },
       checks,
     };
@@ -347,13 +362,14 @@ function bookingRule(message: string, now: Date, checks: Check[]): Decision {
   const nearest = [...free].sort((a, b) => Math.abs(a - wanted) - Math.abs(b - wanted) || a - b).slice(0, 2);
   if (nearest.length === 0) {
     checks.push({ label: "Two nearest free times", result: "No free times left this week", status: "flag" });
-    return flag("No free times are left this week", checks);
+    return flag("No free times are left this week", checks, "booking_unclear");
   }
   const options = nearest.sort((a, b) => a - b).map(describe);
   checks.push({ label: "Two nearest free times", result: options.join(" or "), status: "pass" });
   return {
     action: "answer",
     reason: null,
+    situation: null,
     facts: { kind: "booking_taken", requested: describe(wanted), nearestFree: options },
     checks,
   };
@@ -387,7 +403,7 @@ export function applyClinicRules(
     result: wantsPerson && person.unsure ? "yes (low confidence, so a person looks anyway)" : person.answer.replaceAll("_", " "),
     status: wantsPerson ? "flag" : "pass",
   });
-  if (wantsPerson) return flag("The customer asked for a person", checks);
+  if (wantsPerson) return flag("The customer asked for a person", checks, "wants_person");
 
   // The reply checks only understand English and Arabic, so other languages go to a person.
   const supportedLanguage = !language.unsure && (language.label === "english" || language.label === "arabic");
@@ -404,7 +420,7 @@ export function applyClinicRules(
     result: urgent ? `Yes ("${urgent}")` : "None found",
     status: urgent ? "flag" : "pass",
   });
-  if (urgent) return flag("Possible emergency (urgent words in the message)", checks);
+  if (urgent) return flag("Possible emergency (urgent words in the message)", checks, "emergency");
 
   checks.push({
     label: "What does the customer want?",
@@ -420,9 +436,9 @@ export function applyClinicRules(
     case "opening_hours":
       return hoursRule(message, now, checks);
     case "emergency":
-      return flag("Possible emergency", checks);
+      return flag("Possible emergency", checks, "emergency");
     case "complaint":
-      return flag("The customer is making a complaint", checks);
+      return flag("The customer is making a complaint", checks, "complaint");
     case "other":
       return flag("The request is not something the rules cover", checks);
     default: // "not sure", including any answer under the confidence threshold

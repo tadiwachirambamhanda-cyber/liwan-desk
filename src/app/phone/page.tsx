@@ -16,7 +16,7 @@ type StepGroup = {
   writer?: WriterResult | null;
 };
 type ThreadLine = { who: "customer" | "receptionist"; text: string };
-type Handoff = { id: string; reason: string; thread: ThreadLine[]; resolved: boolean };
+type Handoff = { id: string; reason: string; thread: ThreadLine[]; resolved: boolean; urgent: boolean };
 
 function WriterView({ w, held }: { w: WriterResult; held: boolean }) {
   return (
@@ -227,7 +227,7 @@ export default function PhonePage() {
         classification?: Classification;
         decision?: Decision;
         writer?: WriterResult | null;
-        handoff?: { reason: string } | null;
+        handoff?: { reason: string; situation?: string } | null;
         withPerson?: boolean;
       } = await res.json();
       setGroups((g) => [
@@ -249,10 +249,16 @@ export default function PhonePage() {
           list.map((x) => (x.id === open.id ? { ...x, thread: [...x.thread, { who: "customer", text: body }] } : x)),
         );
       } else if (data.handoff) {
-        const reason = data.handoff.reason;
+        const { reason, situation } = data.handoff;
         setHandoffs((list) => [
           ...list,
-          { id: messageId, reason, thread: [{ who: "customer", text: body }], resolved: false },
+          {
+            id: messageId,
+            reason,
+            thread: [{ who: "customer", text: body }],
+            resolved: false,
+            urgent: situation === "emergency",
+          },
         ]);
       }
       if (data.reply) {
@@ -341,10 +347,19 @@ export default function PhonePage() {
                 <li
                   key={h.id}
                   className={`rounded-lg border p-4 text-sm ${
-                    h.resolved ? "border-neutral-200 bg-white" : "border-amber-300 bg-amber-50"
+                    h.resolved
+                      ? "border-neutral-200 bg-white"
+                      : h.urgent
+                        ? "border-red-400 bg-red-50"
+                        : "border-amber-300 bg-amber-50"
                   }`}
                 >
-                  <p className={h.resolved ? "text-neutral-500" : "text-amber-800"}>{h.reason}</p>
+                  <p className={h.resolved ? "text-neutral-500" : h.urgent ? "text-red-800" : "text-amber-800"}>
+                    {h.urgent && !h.resolved && (
+                      <span className="mr-2 rounded bg-red-600 px-1.5 py-0.5 text-xs font-bold text-white">URGENT</span>
+                    )}
+                    {h.reason}
+                  </p>
                   <div className="mt-2 space-y-1">
                     {h.thread.map((line, i) => (
                       <p

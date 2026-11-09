@@ -8,7 +8,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { applyClinicRules } from "@/lib/clinic";
 import { classifyMessage } from "@/lib/jev";
-import { buildReply, HOLDING_REPLY } from "@/lib/reply";
+import { buildReply, holdingReplyFor } from "@/lib/reply";
 
 export type Step = { label: string; detail: string };
 
@@ -119,9 +119,13 @@ function alreadySeen(id: string): boolean {
 
 // ---------------------------------------------------------------------------
 
-function handover(steps: Step[], reason: string) {
+function handover(steps: Step[], reason: string, customerMessage = "") {
   steps.push({ label: "Handed to a person", detail: `${reason}. Sent a holding reply.` });
-  return Response.json({ steps, reply: HOLDING_REPLY, handoff: { reason } });
+  return Response.json({
+    steps,
+    reply: holdingReplyFor("other", customerMessage),
+    handoff: { reason, situation: "other" },
+  });
 }
 
 async function handle(request: Request, steps: Step[]): Promise<Response> {
@@ -182,14 +186,14 @@ async function handle(request: Request, steps: Step[]): Promise<Response> {
     return Response.json({
       steps,
       reply: null,
-      handoff: { reason: "The conversation is already with a person" },
+      handoff: { reason: "The conversation is already with a person", situation: "other" },
       withPerson: true,
     });
   }
 
   // Very long messages never reach Jev or Claude.
   if (message.body.length > MAX_MESSAGE_CHARS) {
-    return handover(steps, `The message is longer than ${MAX_MESSAGE_CHARS} characters`);
+    return handover(steps, `The message is longer than ${MAX_MESSAGE_CHARS} characters`, message.body);
   }
 
   const classification = await classifyMessage(message.body);

@@ -8,7 +8,7 @@
 // Server side only: never import this from a client component (type imports are fine).
 
 import Anthropic from "@anthropic-ai/sdk";
-import type { Decision, Facts } from "./clinic";
+import type { Decision, Facts, Situation } from "./clinic";
 import { isTemplatesMode } from "./jev";
 
 // ---------------------------------------------------------------------------
@@ -21,7 +21,48 @@ const WRITER_USD_PER_INPUT_TOKEN = 2 / 1_000_000;
 const WRITER_USD_PER_OUTPUT_TOKEN = 10 / 1_000_000; // thinking tokens count as output
 const MAX_REPLY_CHARS = 600;
 
-export const HOLDING_REPLY = "Thanks, I have passed this to our receptionist, who will reply shortly.";
+// ---------------------------------------------------------------------------
+// The holding reply sent when a person must answer. Fixed text, written for each
+// situation, so an emergency gets a sympathetic reply that code (not an AI) controls.
+// It gives no medical advice and names no time. Arabic is chosen when the customer
+// wrote in Arabic script.
+// ---------------------------------------------------------------------------
+
+const HOLDING_REPLIES: Record<Situation, { en: string; ar: string }> = {
+  emergency: {
+    en: "I'm so sorry you're dealing with this. I've marked your message as urgent and passed it to our receptionist, who will reply as soon as possible. If you feel very unwell or this can't wait, please call your local emergency number or go to the nearest emergency department.",
+    ar: "نأسف جداً لما تمر به. لقد وضعت رسالتك كأولوية عاجلة وأحلتها إلى فريق الاستقبال لدينا، وسيرد عليك في أقرب وقت ممكن. وإذا كنت تشعر بتوعك شديد أو كان الأمر لا يحتمل الانتظار، فيرجى الاتصال برقم الطوارئ في بلدك أو التوجه إلى أقرب قسم طوارئ.",
+  },
+  complaint: {
+    en: "I'm sorry to hear that, and thank you for telling us. I've passed your message to our receptionist, who will look into it and reply to you personally.",
+    ar: "نأسف لسماع ذلك، ونشكرك على إبلاغنا. لقد أحلت رسالتك إلى فريق الاستقبال لدينا، وسيتابع الأمر ويرد عليك شخصياً.",
+  },
+  wants_person: {
+    en: "Of course. I've asked our receptionist to take over, and they will reply to you shortly.",
+    ar: "بالتأكيد. لقد طلبت من فريق الاستقبال لدينا التواصل معك، وسيرد عليك قريباً.",
+  },
+  cancel_change: {
+    en: "No problem. I've passed your request to our receptionist, who will help you change or cancel your appointment and reply shortly.",
+    ar: "لا مشكلة. لقد أحلت طلبك إلى فريق الاستقبال لدينا لمساعدتك في تغيير موعدك أو إلغائه، وسيرد عليك قريباً.",
+  },
+  price_unlisted: {
+    en: "Good question. I don't have a price for that to hand, so I've asked our receptionist to get back to you with the details.",
+    ar: "سؤال جيد. ليس لدي سعر لهذا الآن، لذا طلبت من فريق الاستقبال لدينا التواصل معك بالتفاصيل.",
+  },
+  booking_unclear: {
+    en: "Thanks for getting in touch. I've passed your booking request to our receptionist, who will confirm the details with you shortly.",
+    ar: "شكراً لتواصلك. لقد أحلت طلب الحجز إلى فريق الاستقبال لدينا، وسيؤكد معك التفاصيل قريباً.",
+  },
+  other: {
+    en: "Thanks, I have passed this to our receptionist, who will reply shortly.",
+    ar: "شكراً لك. لقد أحلت رسالتك إلى فريق الاستقبال لدينا، وسيرد عليك قريباً.",
+  },
+};
+
+export function holdingReplyFor(situation: Situation | null, customerMessage: string): string {
+  const reply = HOLDING_REPLIES[situation ?? "other"];
+  return /[\u0600-\u06FF]/.test(customerMessage) ? reply.ar : reply.en;
+}
 
 // ---------------------------------------------------------------------------
 // What the rest of the app sees
@@ -42,7 +83,7 @@ export type WriterResult = {
 
 export type ReplyOutcome = {
   reply: string; // what goes to the phone
-  handoff: { reason: string } | null; // set when a person must answer
+  handoff: { reason: string; situation: Situation } | null; // set when a person must answer
   writer: WriterResult | null; // null when no Claude call was needed
 };
 
@@ -358,8 +399,13 @@ export function checkReply(draft: string, facts: Facts): ReplyCheck[] {
 // The one function the rest of the app calls
 // ---------------------------------------------------------------------------
 
-function hold(reason: string, writer: WriterResult | null): ReplyOutcome {
-  return { reply: HOLDING_REPLY, handoff: { reason }, writer };
+function hold(
+  reason: string,
+  writer: WriterResult | null,
+  customerMessage: string,
+  situation: Situation = "other",
+): ReplyOutcome {
+  return { reply: holdingReplyFor(situation, customerMessage), handoff: { reason, situation }, writer };
 }
 
 // ---------------------------------------------------------------------------
@@ -393,20 +439,20 @@ function buildTemplateReply(customerMessage: string, facts: Facts): ReplyOutcome
   };
   if (/[\u0600-\u06FF]/.test(customerMessage)) {
     writer.error = "Templates mode only writes English";
-    return hold("Templates mode only writes English", writer);
+    return hold("Templates mode only writes English", writer, customerMessage);
   }
   const text = templateReply(facts);
   writer.draft = text;
   writer.checks = checkReply(text, facts);
   const failed = writer.checks.filter((c) => !c.passed);
-  if (failed.length > 0) return hold(`Reply check failed: ${failed.map((c) => c.name).join("; ")}`, writer);
+  if (failed.length > 0) return hold(`Reply check failed: ${failed.map((c) => c.name).join("; ")}`, writer, customerMessage);
   return { reply: text, handoff: null, writer };
 }
 
 export async function buildReply(customerMessage: string, decision: Decision): Promise<ReplyOutcome> {
   // Flagged by the clinic rules: no Claude call, a person answers.
   if (decision.action === "flag" || !decision.facts) {
-    return hold(decision.reason ?? "Flagged for a person", null);
+    return hold(decision.reason ?? "Flagged for a person", null, customerMessage, decision.situation ?? "other");
   }
 
   const facts = decision.facts;
@@ -451,7 +497,7 @@ export async function buildReply(customerMessage: string, decision: Decision): P
     if (response.stop_reason === "refusal" || response.stop_reason === "max_tokens" || !text) {
       writer.error = `Claude gave no usable reply (stop reason: ${response.stop_reason})`;
       console.log("[reply]", JSON.stringify({ ms: writer.ms, sent: false, stop: response.stop_reason }));
-      return hold("Claude could not write a reply", writer);
+      return hold("Claude could not write a reply", writer, customerMessage);
     }
 
     writer.draft = text;
@@ -459,13 +505,13 @@ export async function buildReply(customerMessage: string, decision: Decision): P
     const failed = writer.checks.filter((c) => !c.passed);
     console.log("[reply]", JSON.stringify({ ms: writer.ms, sent: failed.length === 0, failed: failed.map((c) => c.name) }));
     if (failed.length > 0) {
-      return hold(`Reply check failed: ${failed.map((c) => c.name).join("; ")}`, writer);
+      return hold(`Reply check failed: ${failed.map((c) => c.name).join("; ")}`, writer, customerMessage);
     }
     return { reply: text, handoff: null, writer };
   } catch (err) {
     writer.ms = Math.round(performance.now() - started);
     writer.error = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
     console.log("[reply]", JSON.stringify({ ms: writer.ms, sent: false, error: err instanceof Error ? err.name : "unknown" }));
-    return hold("Claude could not write a reply", writer);
+    return hold("Claude could not write a reply", writer, customerMessage);
   }
 }
