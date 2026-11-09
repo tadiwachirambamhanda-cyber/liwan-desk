@@ -18,6 +18,13 @@ type StepGroup = {
 type ThreadLine = { who: "customer" | "receptionist"; text: string };
 type Handoff = { id: string; reason: string; thread: ThreadLine[]; resolved: boolean; urgent: boolean };
 
+// WhatsApp shows *text* as bold. The simulator does the same so a list looks as it would on a phone.
+function whatsappText(text: string): React.ReactNode[] {
+  return text.split(/(\*[^*\n]+\*)/g).map((part, i) =>
+    /^\*[^*\n]+\*$/.test(part) ? <strong key={i}>{part.slice(1, -1)}</strong> : part,
+  );
+}
+
 function WriterView({ w, held }: { w: WriterResult; held: boolean }) {
   return (
     <div className="mt-3 rounded-md bg-neutral-50 p-3 text-sm">
@@ -312,7 +319,7 @@ export default function PhonePage() {
                   {b.from === "receptionist" && (
                     <span className="mb-0.5 block text-xs font-medium text-[#075e54]">Receptionist</span>
                   )}
-                  {b.text}
+                  {whatsappText(b.text)}
                 </p>
               </div>
             ))}

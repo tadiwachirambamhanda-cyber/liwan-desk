@@ -34,7 +34,7 @@ const QUESTIONS = {
     ask: "What does the customer want?",
     options: {
       booking: "They want to book, change or cancel an appointment",
-      price_question: "They ask what something costs",
+      price_question: "They ask what something costs, ask for the prices, or ask what services or treatments the clinic offers",
       opening_hours: "They ask when the clinic is open",
       complaint: "They are unhappy about something that already happened",
       greeting: "Only a greeting such as hello, hi, good morning or salam, with no question or request",
@@ -284,7 +284,7 @@ function classifyByKeywords(message: string): Classification {
   else if (has(URGENT_WORDS)) intent = "emergency";
   else if (has(/\b(?:complain\w*|unhappy|terrible|awful|worst|refund|rude|disappointed)\b/)) intent = "complaint";
   else if (has(CANCEL_OR_CHANGE_WORDS)) intent = "booking";
-  else if (has(/\b(?:how much|price|prices|cost|costs|fee|fees|aed|dirhams?)\b|سعر|كم|تكلفة|بكم/)) intent = "price_question";
+  else if (has(/\b(?:how much|price|prices|cost|costs|fee|fees|aed|dirhams?|services?|treatments?|menu)\b|سعر|كم|تكلفة|بكم/)) intent = "price_question";
   else if (has(/\b(?:book|booking|appointment|reserve|slot|schedule)\b|موعد|حجز/)) intent = "booking";
   else if (has(/\b(?:open|opening|hours|close|closing|closed|what time|when do you)\b|ساعات|دوام|مفتوح|تفتح/)) intent = "opening_hours";
 
