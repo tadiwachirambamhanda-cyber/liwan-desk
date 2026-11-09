@@ -323,11 +323,13 @@ const PRICE_ASK_WORDS = new Set(
     "i we want wanna need would like to know see get have ask about the your ur a an of all what whats are is how much " +
     "do does you it cost costs price prices pricing rate rates fee fees charge charges list treatment treatments " +
     "service services please pls can could me tell give send show share hi hello hey there for and on info information " +
-    "details menu per visit dental clinic " +
-    "اريد ابغى ابي احتاج عن ما هي هل كم الاسعار اسعار سعر الاسعار التكلفة تكلفة قائمة لو سمحت من فضلك ممكن تفاصيل العلاجات الخدمات"
+    "details menu per visit dental clinic offer offering provide provided available " +
+    "اريد ابغى ابي احتاج عن ما هي هل كم الاسعار اسعار سعر الاسعار التكلفة تكلفة قائمة لو سمحت من فضلك ممكن تفاصيل " +
+    "العلاجات الخدمات خدمات علاجات تقدمون تقدم عندكم لديكم"
   ).split(" "),
 );
-const PRICE_WORDS = /\b(?:price|prices|pricing|cost|costs|rate|rates|fee|fees|charge|charges)\b|how much|اسعار|الاسعار|سعر|تكلفة|التكلفة|كم/;
+const PRICE_WORDS =
+  /\b(?:price|prices|pricing|cost|costs|rate|rates|fee|fees|charge|charges|services?|treatments?|procedures?|menu)\b|how much|اسعار|الاسعار|سعر|تكلفة|التكلفة|كم|خدمات|الخدمات|العلاجات|علاجات/;
 
 function isGeneralPriceAsk(message: string): boolean {
   const normalised = message
@@ -559,9 +561,11 @@ export function applyClinicRules(
     case "other":
       // Jev often says "other" or "not sure" for a plain "ok" or "thanks"; code recognises those.
       if (isOnlyClosing(message)) return closingRule(message, checks);
+      if (isGeneralPriceAsk(message)) return priceRule(message, checks);
       return flag("The request is not something the rules cover", checks);
     default: // "not sure", including any answer under the confidence threshold
       if (isOnlyClosing(message)) return closingRule(message, checks);
+      if (isGeneralPriceAsk(message)) return priceRule(message, checks);
       return flag("The message was not clear enough to act on", checks);
   }
 }
