@@ -66,12 +66,16 @@ function signatureProblem(request: Request, raw: string): Response | null {
   const secret = process.env.WHATSAPP_APP_SECRET?.trim();
   const given = request.headers.get("x-hub-signature-256");
   const production = process.env.NODE_ENV === "production";
+  // The /phone simulator cannot sign its messages. It works unsigned in development, and in
+  // a hosted deployment only when SIMULATOR_ENABLED=true is set on purpose. Never set it
+  // on a deployment that is open to the public: anyone could then spend the AI keys.
+  const unsignedAllowed = !production || process.env.SIMULATOR_ENABLED === "true";
 
-  if (production && !secret) {
+  if (production && !secret && !unsignedAllowed) {
     return Response.json({ steps: [{ label: "Rejected", detail: "The server has no WhatsApp app secret set" }], reply: null }, { status: 503 });
   }
-  // In development the simulator posts without a signature. Anything that does send one is still checked.
-  if (!given && !production) return null;
+  // Anything that does send a signature is still checked.
+  if (!given && unsignedAllowed) return null;
   if (!secret || !given) {
     return Response.json({ steps: [{ label: "Rejected", detail: "Missing signature" }], reply: null }, { status: 401 });
   }
