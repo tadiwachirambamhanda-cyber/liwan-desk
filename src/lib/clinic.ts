@@ -90,6 +90,7 @@ export type Check = {
 
 // The facts the code found. These are the only facts Claude is allowed to use.
 export type Facts =
+  | { kind: "greeting" }
   | { kind: "price"; treatments: { name: string; priceAed: number; from: boolean }[] }
   | { kind: "booking_free"; requested: string }
   | { kind: "booking_taken"; requested: string; nearestFree: string[] }
@@ -263,6 +264,19 @@ function flag(reason: string, checks: Check[], situation: Situation = "other"): 
   return { action: "flag", reason, situation, facts: null, checks };
 }
 
+// A greeting gets a fixed welcome. A long message that Jev called a greeting probably
+// holds a request too, so it goes to a person instead.
+const MAX_GREETING_CHARS = 60;
+
+function greetingRule(message: string, checks: Check[]): Decision {
+  if (message.length > MAX_GREETING_CHARS) {
+    checks.push({ label: "Only a greeting?", result: "No, the message is long and may hold a request", status: "flag" });
+    return flag("The message starts like a greeting but is long enough to hold a request", checks);
+  }
+  checks.push({ label: "Only a greeting?", result: "Yes", status: "pass" });
+  return { action: "answer", reason: null, situation: null, facts: { kind: "greeting" }, checks };
+}
+
 function priceRule(message: string, checks: Check[]): Decision {
   const unlisted = mentionsUnlistedTreatment(message);
   if (unlisted) {
@@ -425,10 +439,12 @@ export function applyClinicRules(
   checks.push({
     label: "What does the customer want?",
     result: intent.answer.replaceAll("_", " "),
-    status: ["price_question", "booking", "opening_hours"].includes(intent.answer) ? "pass" : "flag",
+    status: ["greeting", "price_question", "booking", "opening_hours"].includes(intent.answer) ? "pass" : "flag",
   });
 
   switch (intent.answer) {
+    case "greeting":
+      return greetingRule(message, checks);
     case "price_question":
       return priceRule(message, checks);
     case "booking":

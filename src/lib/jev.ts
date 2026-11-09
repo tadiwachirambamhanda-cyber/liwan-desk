@@ -37,6 +37,7 @@ const QUESTIONS = {
       price_question: "They ask what something costs",
       opening_hours: "They ask when the clinic is open",
       complaint: "They are unhappy about something that already happened",
+      greeting: "Only a greeting such as hello, hi, good morning or salam, with no question or request",
       emergency: "Pain, swelling, bleeding or a broken tooth",
       other: "Something else that fits none of the other options",
       not_sure: "The message is too unclear to tell",
@@ -275,7 +276,10 @@ function classifyByKeywords(message: string): Classification {
   const has = (re: RegExp) => re.test(t);
 
   let intent: keyof typeof QUESTIONS.intent.options = "other";
-  if (has(URGENT_WORDS)) intent = "emergency";
+  const greetingOnly =
+    /^(?:hi+|hello+|hey+|hiya|good (?:morning|afternoon|evening)|(?:as|assalam\w*|salam\w*|salaam\w*)(?: ?alaikum| ?alaykum)?|السلام عليكم|سلام عليكم|مرحبا|اهلا|أهلا|هلا|صباح الخير|مساء الخير)(?:\s+(?:there|team|dr|doctor|all))?$/i;
+  if (greetingOnly.test(t.replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim())) intent = "greeting";
+  else if (has(URGENT_WORDS)) intent = "emergency";
   else if (has(/\b(?:complain\w*|unhappy|terrible|awful|worst|refund|rude|disappointed)\b/)) intent = "complaint";
   else if (has(CANCEL_OR_CHANGE_WORDS)) intent = "booking";
   else if (has(/\b(?:how much|price|prices|cost|costs|fee|fees|aed|dirhams?)\b|سعر|كم|تكلفة|بكم/)) intent = "price_question";
