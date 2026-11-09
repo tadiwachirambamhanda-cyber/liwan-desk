@@ -315,6 +315,32 @@ function greetingRule(message: string, checks: Check[]): Decision {
   return { action: "answer", reason: null, situation: null, facts: { kind: "greeting" }, checks };
 }
 
+// Words a plain "what are your prices?" is made of. Jev says it is a price question, but
+// code decides it is general: every word must be on this list and one must be about price.
+// Any other word ("botox", "straightening") means a specific treatment, so it is not general.
+const PRICE_ASK_WORDS = new Set(
+  (
+    "i we want wanna need would like to know see get have ask about the your ur a an of all what whats are is how much " +
+    "do does you it cost costs price prices pricing rate rates fee fees charge charges list treatment treatments " +
+    "service services please pls can could me tell give send show share hi hello hey there for and on info information " +
+    "details menu per visit dental clinic " +
+    "اريد ابغى ابي احتاج عن ما هي هل كم الاسعار اسعار سعر الاسعار التكلفة تكلفة قائمة لو سمحت من فضلك ممكن تفاصيل العلاجات الخدمات"
+  ).split(" "),
+);
+const PRICE_WORDS = /\b(?:price|prices|pricing|cost|costs|rate|rates|fee|fees|charge|charges)\b|how much|اسعار|الاسعار|سعر|تكلفة|التكلفة|كم/;
+
+function isGeneralPriceAsk(message: string): boolean {
+  const normalised = message
+    .toLowerCase()
+    .replace(/[أإآ]/g, "ا")
+    .replace(/[\u064B-\u065F\u0640]/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalised || normalised.length > 80 || !PRICE_WORDS.test(normalised)) return false;
+  return normalised.split(" ").every((w) => PRICE_ASK_WORDS.has(w));
+}
+
 function priceRule(message: string, checks: Check[]): Decision {
   const unlisted = mentionsUnlistedTreatment(message);
   if (unlisted) {
@@ -324,6 +350,17 @@ function priceRule(message: string, checks: Check[]): Decision {
   const { found, skipped } = readTreatments(message);
   if (skipped.length > 0) {
     checks.push({ label: "Treatments the customer does not want", result: skipped.join(", "), status: "info" });
+  }
+  if (found.length === 0 && skipped.length === 0 && isGeneralPriceAsk(message)) {
+    // "I want prices": no treatment named, so show the whole price list.
+    checks.push({ label: "Which treatment?", result: "None named, so the whole price list is shown", status: "pass" });
+    return {
+      action: "answer",
+      reason: null,
+      situation: null,
+      facts: { kind: "price", treatments: PRICE_LIST.map((t) => ({ name: t.name, priceAed: t.aed, from: t.from })) },
+      checks,
+    };
   }
   if (found.length === 0) {
     checks.push({ label: "Is the treatment on the price list?", result: "No treatment from the list was named", status: "flag" });

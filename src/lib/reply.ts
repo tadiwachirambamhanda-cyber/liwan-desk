@@ -46,8 +46,8 @@ const HOLDING_REPLIES: Record<Situation, { en: string; ar: string }> = {
     ar: "لا مشكلة. لقد أحلت طلبك إلى فريق الاستقبال لدينا لمساعدتك في تغيير موعدك أو إلغائه، وسيرد عليك قريباً.",
   },
   price_unlisted: {
-    en: "Good question. I don't have a price for that to hand, so I've asked our receptionist to get back to you with the details.",
-    ar: "سؤال جيد. ليس لدي سعر لهذا الآن، لذا طلبت من فريق الاستقبال لدينا التواصل معك بالتفاصيل.",
+    en: "I don't have a price for that to hand, so I've asked our receptionist to get back to you with the details.",
+    ar: "ليس لدي سعر لهذا الآن، لذا طلبت من فريق الاستقبال لدينا التواصل معك بالتفاصيل.",
   },
   booking_unclear: {
     en: "Thanks for getting in touch. I've passed your booking request to our receptionist, who will confirm the details with you shortly.",
