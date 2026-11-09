@@ -59,6 +59,21 @@ const HOLDING_REPLIES: Record<Situation, { en: string; ar: string }> = {
   },
 };
 
+// The welcome for a plain greeting. Fixed text, so a greeting can never fail or be handed
+// over. It answers "salam" the way it is answered, and "good morning" with the same.
+export function greetingReplyFor(customerMessage: string): string {
+  const salam = /\b(?:assalam\w*|salam\w*|salaam\w*)\b|السلام عليكم|سلام عليكم/i.test(customerMessage);
+  const morning = /good morning|صباح/i.test(customerMessage);
+  const afternoon = /good afternoon/i.test(customerMessage);
+  const evening = /good evening|مساء/i.test(customerMessage);
+  if (/[\u0600-\u06FF]/.test(customerMessage)) {
+    const lead = salam ? "وعليكم السلام ورحمة الله وبركاته! " : morning ? "صباح النور! " : evening ? "مساء النور! " : "";
+    return `${lead}أهلاً وسهلاً بك في عيادة لوان للأسنان! يمكنني مساعدتك في الأسعار وساعات العمل وحجز المواعيد. كيف يمكنني مساعدتك؟`;
+  }
+  const opener = salam ? "Wa alaikum assalam" : morning ? "Good morning" : afternoon ? "Good afternoon" : evening ? "Good evening" : "Hello";
+  return `${opener}, and welcome to Liwan Dental! I can help with prices, opening hours and booking an appointment. What can I do for you?`;
+}
+
 export function holdingReplyFor(situation: Situation | null, customerMessage: string): string {
   const reply = HOLDING_REPLIES[situation ?? "other"];
   return /[\u0600-\u06FF]/.test(customerMessage) ? reply.ar : reply.en;
@@ -95,6 +110,8 @@ export type ReplyOutcome = {
 // never sees it, it cannot say that time is available.
 function factsToText(f: Facts): string {
   switch (f.kind) {
+    case "greeting":
+      return "";
     case "price":
       return f.treatments
         .map((t) => `${t.name}: ${t.from ? "from " : ""}AED ${t.priceAed.toLocaleString("en-US")}`)
@@ -114,6 +131,7 @@ function factsToText(f: Facts): string {
 }
 
 const INTENT_FOR: Record<Facts["kind"], string> = {
+  greeting: "The customer greeted us.",
   price: "The customer asked about a price.",
   booking_free: "The customer asked to book an appointment.",
   booking_taken: "The customer asked to book an appointment.",
@@ -415,6 +433,8 @@ function hold(
 
 function templateReply(f: Facts): string {
   switch (f.kind) {
+    case "greeting":
+      return greetingReplyFor("hello");
     case "price":
       return factsToText(f);
     case "booking_free":
@@ -456,6 +476,7 @@ export async function buildReply(customerMessage: string, decision: Decision): P
   }
 
   const facts = decision.facts;
+  if (facts.kind === "greeting") return { reply: greetingReplyFor(customerMessage), handoff: null, writer: null };
   if (isTemplatesMode()) return buildTemplateReply(customerMessage, facts);
   const started = performance.now();
   const writer: WriterResult = {

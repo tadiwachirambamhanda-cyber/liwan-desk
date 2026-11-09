@@ -242,7 +242,13 @@ async function handle(request: Request, steps: Step[]): Promise<Response> {
   steps.push(
     outcome.handoff
       ? { label: "Handed to a person", detail: `${outcome.handoff.reason}. Sent a holding reply.` }
-      : { label: "Sent the reply", detail: "The reply passed every check" },
+      : {
+          label: "Sent the reply",
+          detail:
+            decision.facts?.kind === "greeting"
+              ? "A fixed welcome, written by code (no Claude call needed)"
+              : "The reply passed every check",
+        },
   );
 
   return Response.json({
