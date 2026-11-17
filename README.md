@@ -1,36 +1,29 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Liwan Desk: WhatsApp front-desk agent for a dental clinic
 
-## Getting Started
+An AI agent that answers a Dubai dental clinic's WhatsApp messages in **English and Arabic**: prices, opening hours, free appointment times, greetings and thanks. Anything it should not answer is handed to a person with a kind holding reply. It runs on a phone-style simulator at `/phone` and uses **made-up data only**.
 
-First, run the development server:
+**Live demo:** https://liwan-desk.vercel.app/phone
 
+## How a message is handled
+1. **Jev** sorts the message into a label (price, booking, emergency, complaint, ...), with a Claude fallback.
+2. **Clinic rules in plain code** (`src/lib/clinic.ts`) decide what happens. Same input, same answer, every time.
+3. **Claude** writes only a warm opening and closing around lists that code builds (prices, times, hours).
+4. A **reply checker** (`src/lib/reply.ts`) approves every reply against an allow-list of prices, times and claims before it is sent.
+5. Emergencies, complaints, cancellations, unlisted treatments and anything unclear go to a person.
+
+## Built-in safety
+Webhook signature check, rate limiting, a templates-only mode that runs without any AI (`AI_MODE=templates`), secrets only on the server, and a simulator switch (`SIMULATOR_ENABLED`) that must be off on any deployment with real patient data.
+
+## Run it
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev        # http://localhost:3000/phone
+npm run typecheck
 ```
+Copy `.env.example` to `.env.local`. Without keys the agent still runs in templates mode.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Status
+Agent, rules, reply checks, hosting and database tables are on `main`. The conversation memory step (every message, step, cost and hand-over saved in Supabase) is in an open pull request. Staff inbox and real WhatsApp are planned next.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Stack
+Next.js 16, React 19, TypeScript, Zod, Claude (Anthropic SDK), Jev classifier, Supabase, Vercel (Mumbai region, next to the database).
