@@ -8,6 +8,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { applyClinicRules } from "@/lib/clinic";
 import { classifyMessage } from "@/lib/jev";
+import { openConversation, saveRun, type OpenedConversation, type SavedStep } from "@/lib/memory";
 import { buildReply, holdingReplyFor } from "@/lib/reply";
 
 export type Step = { label: string; detail: string };
@@ -18,10 +19,6 @@ export const maxDuration = 60;
 const MAX_BODY_BYTES = 65_536;
 const MAX_MESSAGE_CHARS = 1000;
 const RATE_LIMIT_PER_MINUTE = 15; // per sender
-
-// Header the simulator page sets while a person is handling the conversation.
-// Trusting it is safe: its only effect is that the bot stays quiet.
-const WITH_PERSON_HEADER = "x-conversation-with-person";
 
 type IncomingText = { from: string; id: string; body: string };
 
@@ -123,6 +120,12 @@ function alreadySeen(id: string): boolean {
 
 // ---------------------------------------------------------------------------
 
+// Without a database (local work, tests) the agent runs without memory. On a hosted
+// deployment a missing database counts as a failure, never as "memory off".
+function memoryIsConfigured(): boolean {
+  return Boolean(process.env.SUPABASE_URL?.trim() && process.env.SUPABASE_SECRET_KEY?.trim());
+}
+
 function handover(steps: Step[], reason: string, customerMessage = "") {
   steps.push({ label: "Handed to a person", detail: `${reason}. Sent a holding reply.` });
   return Response.json({
@@ -184,20 +187,95 @@ async function handle(request: Request, steps: Step[]): Promise<Response> {
     });
   }
 
-  // A person is already handling this conversation: the bot stays quiet.
-  if (request.headers.get(WITH_PERSON_HEADER) === "true") {
-    steps.push({ label: "No automatic reply", detail: "This conversation is with a person" });
-    return Response.json({
-      steps,
-      reply: null,
-      handoff: { reason: "The conversation is already with a person", situation: "other" },
-      withPerson: true,
-    });
+  // Memory. The customer's message is saved first, so a crash later never loses their words,
+  // and a WhatsApp message id we already have stops the run here: no second reply, no second
+  // model call. A request with no WhatsApp signature is the simulator; a signed one is WhatsApp.
+  const source = request.headers.get("x-hub-signature-256") ? "whatsapp" : "simulator";
+  let mem: OpenedConversation | null = null;
+  if (memoryIsConfigured() || process.env.NODE_ENV === "production") {
+    try {
+      const opened = await openConversation({
+        source,
+        externalId: message.from,
+        externalMessageId: message.id === "unknown" ? null : message.id,
+        body: message.body,
+      });
+      if (opened.duplicate) {
+        steps.push({ label: "Ignored", detail: `Message ${message.id} was already handled (WhatsApp retried it)` });
+        return Response.json({ steps, reply: null });
+      }
+      mem = opened;
+    } catch (err) {
+      // Nothing else can record this yet. Before real WhatsApp this must answer with an error so it retries.
+      console.error("[memory] database unavailable:", err instanceof Error ? err.name : "unknown");
+      return handover(steps, "The conversation memory could not be reached", message.body);
+    }
+  } else {
+    steps.push({ label: "Memory is off", detail: "No database is set up here, so this message is not remembered" });
   }
+
+  // Save what the agent did (reply, steps with costs, any hand-over) in one go, then answer.
+  type Result = {
+    reply: string | null;
+    handoff: { reason: string; situation: string } | null;
+    classification?: Awaited<ReturnType<typeof classifyMessage>>;
+    decision?: ReturnType<typeof applyClinicRules>;
+    writer?: Awaited<ReturnType<typeof buildReply>>["writer"];
+    withPerson?: boolean;
+    newHandover?: boolean; // false when a person already holds the conversation and nothing new is raised
+  };
+  const respond = async (r: Result) => {
+    if (mem) {
+      const rows: SavedStep[] = steps.map((st) => ({ kind: "step", label: st.label, detail: st.detail }));
+      const c = r.classification;
+      if (c) {
+        rows.push({
+          kind: "classification",
+          label: c.engine === "jev" ? "Jev" : c.engine === "claude" ? "Claude (sorting)" : "Keywords",
+          engine: c.engine,
+          model: c.model,
+          durationMs: c.ms,
+          inputTokens: c.ok ? c.inputTokens : null,
+          costUsd: c.ok ? c.costUsd : null,
+          payload: c,
+        });
+      }
+      if (r.decision) rows.push({ kind: "rules", label: "Clinic rules", engine: "code", payload: r.decision });
+      if (r.writer) {
+        rows.push({
+          kind: "writer",
+          label: r.writer.model === "templates" ? "Template reply" : "Claude reply",
+          engine: r.writer.model === "templates" ? "templates" : "claude",
+          model: r.writer.model,
+          durationMs: r.writer.ms,
+          inputTokens: r.writer.inputTokens,
+          outputTokens: r.writer.outputTokens,
+          costUsd: r.writer.costUsd,
+          payload: r.writer,
+        });
+      }
+      try {
+        await saveRun({
+          conversationId: mem.conversationId,
+          messageId: mem.messageId,
+          reply: r.reply,
+          steps: rows,
+          handover: r.handoff && r.newHandover !== false ? r.handoff : null,
+        });
+      } catch (err) {
+        // The customer still gets their reply; only the record is missing.
+        console.error("[memory] could not save the run:", err instanceof Error ? err.name : "unknown");
+        steps.push({ label: "Memory", detail: "Could not save this run (see the server log)" });
+      }
+    }
+    return Response.json({ steps, ...r });
+  };
 
   // Very long messages never reach Jev or Claude.
   if (message.body.length > MAX_MESSAGE_CHARS) {
-    return handover(steps, `The message is longer than ${MAX_MESSAGE_CHARS} characters`, message.body);
+    const reason = `The message is longer than ${MAX_MESSAGE_CHARS} characters`;
+    steps.push({ label: "Handed to a person", detail: `${reason}. Sent a holding reply.` });
+    return respond({ reply: holdingReplyFor("other", message.body), handoff: { reason, situation: "other" } });
   }
 
   const classification = await classifyMessage(message.body);
@@ -222,7 +300,21 @@ async function handle(request: Request, steps: Step[]): Promise<Response> {
     detail: decision.action === "flag" ? `Flagged for a person: ${decision.reason}` : "Found the facts in the clinic's own data",
   });
 
-  const outcome = await buildReply(message.body, decision);
+  // A person already holds this conversation: the agent stays quiet, except for an emergency,
+  // which is raised again so it never sits unseen behind a receptionist who has stepped away.
+  if (mem?.status === "with_person" && decision.situation !== "emergency") {
+    steps.push({ label: "No automatic reply", detail: "This conversation is with a person" });
+    return respond({
+      reply: null,
+      handoff: { reason: "The conversation is already with a person", situation: "other" },
+      newHandover: false,
+      withPerson: true,
+      classification,
+      decision,
+    });
+  }
+
+  const outcome = await buildReply(message.body, decision, mem ? { recent: mem.recent, hasGreeted: mem.hasGreeted } : undefined);
   if (outcome.writer) {
     const templates = outcome.writer.model === "templates";
     steps.push({
@@ -251,13 +343,12 @@ async function handle(request: Request, steps: Step[]): Promise<Response> {
         },
   );
 
-  return Response.json({
-    steps,
+  return respond({
     reply: outcome.reply,
+    handoff: outcome.handoff,
     classification,
     decision,
     writer: outcome.writer,
-    handoff: outcome.handoff,
   });
 }
 

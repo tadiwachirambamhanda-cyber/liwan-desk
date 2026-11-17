@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Step } from "../api/whatsapp/route";
 import type { Classification } from "@/lib/jev";
 import type { Decision } from "@/lib/clinic";
 import type { WriterResult } from "@/lib/reply";
+import type { History } from "@/lib/memory";
 
 type Bubble = { id: string; from: "customer" | "agent" | "receptionist"; text: string };
 type StepGroup = {
@@ -140,12 +141,49 @@ function ClassificationView({ c }: { c: Classification }) {
   );
 }
 
-// A fake customer phone number and business number for the simulator.
-const CUSTOMER_NUMBER = "15551234567";
+// A fake business number for the simulator. The customer is the chat's own random session id.
 const BUSINESS_NUMBER = "15550001111";
+const SESSION_KEY = "liwan-sim-session";
+const SESSION_ID = /^sim-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+// The chat's session id lives in the browser's saved data, read the way React expects for outside data.
+const sessionListeners = new Set<() => void>();
+let unsavedSessionId: string | null = null; // used only when the browser blocks saved data
+
+function subscribeToSession(listener: () => void) {
+  sessionListeners.add(listener);
+  window.addEventListener("storage", listener);
+  return () => {
+    sessionListeners.delete(listener);
+    window.removeEventListener("storage", listener);
+  };
+}
+
+function readSessionId(): string {
+  try {
+    const saved = localStorage.getItem(SESSION_KEY);
+    if (saved && SESSION_ID.test(saved)) return saved;
+    const id = `sim-${crypto.randomUUID()}`;
+    localStorage.setItem(SESSION_KEY, id);
+    return id;
+  } catch {
+    unsavedSessionId ??= `sim-${crypto.randomUUID()}`;
+    return unsavedSessionId;
+  }
+}
+
+function startNewSessionId() {
+  const id = `sim-${crypto.randomUUID()}`;
+  try {
+    localStorage.setItem(SESSION_KEY, id);
+  } catch {
+    unsavedSessionId = id;
+  }
+  sessionListeners.forEach((listener) => listener());
+}
 
 // Builds an incoming text message exactly as the WhatsApp Cloud API sends it.
-function buildPayload(body: string, messageId: string) {
+function buildPayload(body: string, messageId: string, from: string) {
   return {
     object: "whatsapp_business_account",
     entry: [
@@ -160,10 +198,10 @@ function buildPayload(body: string, messageId: string) {
                 display_phone_number: BUSINESS_NUMBER,
                 phone_number_id: "PHONE_NUMBER_ID",
               },
-              contacts: [{ profile: { name: "Test Customer" }, wa_id: CUSTOMER_NUMBER }],
+              contacts: [{ profile: { name: "Test Customer" }, wa_id: from }],
               messages: [
                 {
-                  from: CUSTOMER_NUMBER,
+                  from,
                   id: messageId,
                   timestamp: String(Math.floor(Date.now() / 1000)),
                   type: "text",
@@ -185,12 +223,64 @@ export default function PhonePage() {
   const [sending, setSending] = useState(false);
   const [handoffs, setHandoffs] = useState<Handoff[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const sessionId = useSyncExternalStore(subscribeToSession, readSessionId, () => null);
+  const [loadState, setLoadState] = useState<"loading" | "ready" | "failed">("loading");
+  const [notice, setNotice] = useState<string | null>(null);
   const chatEnd = useRef<HTMLDivElement>(null);
 
-  // The receptionist answers a handed-over conversation. Their reply appears on the phone.
-  function answerAsReceptionist(h: Handoff) {
+  // The chat is remembered by the server. This page keeps only a random session id in the browser
+  // and asks the server for the history when it opens.
+  const [reloadTick, setReloadTick] = useState(0);
+
+  // Whenever the chat's session id is known (or changes), bring its history back from the server.
+  useEffect(() => {
+    if (!sessionId) return;
+    let cancelled = false;
+    fetch(`/api/conversations/${sessionId}`)
+      .then((res) => {
+        if (!res.ok) throw new Error("history");
+        return res.json() as Promise<History>;
+      })
+      .then((h) => {
+        if (cancelled) return;
+        setBubbles(h.bubbles);
+        setGroups(h.groups);
+        setHandoffs(h.handoffs);
+        setLoadState("ready");
+      })
+      .catch(() => {
+        if (!cancelled) setLoadState("failed");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, reloadTick]);
+
+  function newChat() {
+    setBubbles([]);
+    setGroups([]);
+    setHandoffs([]);
+    setDrafts({});
+    setNotice(null);
+    startNewSessionId();
+  }
+
+  // The receptionist answers a handed-over conversation. The server saves it; it appears on the phone.
+  async function answerAsReceptionist(h: Handoff) {
     const reply = (drafts[h.id] ?? "").trim();
-    if (!reply) return;
+    if (!reply || !sessionId) return;
+    try {
+      const res = await fetch(`/api/conversations/${sessionId}/reply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: reply }),
+      });
+      if (!res.ok) throw new Error("reply");
+    } catch {
+      setNotice("The reply could not be saved. Try again.");
+      return;
+    }
+    setNotice(null);
     setBubbles((b) => [...b, { id: `${h.id}-person-${b.length}`, from: "receptionist", text: reply }]);
     setHandoffs((list) =>
       list.map((x) => (x.id === h.id ? { ...x, thread: [...x.thread, { who: "receptionist", text: reply }] } : x)),
@@ -198,10 +288,19 @@ export default function PhonePage() {
     setDrafts((d) => ({ ...d, [h.id]: "" }));
   }
 
-  // While a conversation is with a person, the agent stays quiet.
+  // While a conversation is with a person, the server keeps the agent quiet until it is handed back.
   const openHandoff = [...handoffs].reverse().find((h) => !h.resolved);
-  function handBack(h: Handoff) {
-    setHandoffs((list) => list.map((x) => (x.id === h.id ? { ...x, resolved: true } : x)));
+  async function handBack() {
+    if (!sessionId) return;
+    try {
+      const res = await fetch(`/api/conversations/${sessionId}/hand-back`, { method: "POST" });
+      if (!res.ok) throw new Error("hand back");
+    } catch {
+      setNotice("Could not hand the conversation back. Try again.");
+      return;
+    }
+    setNotice(null);
+    setHandoffs((list) => list.map((x) => ({ ...x, resolved: true })));
   }
 
   useEffect(() => {
@@ -211,7 +310,7 @@ export default function PhonePage() {
   async function send(e: React.FormEvent) {
     e.preventDefault();
     const body = text.trim();
-    if (!body || sending) return;
+    if (!body || sending || !sessionId) return;
 
     const messageId = `wamid.${crypto.randomUUID()}`;
     setBubbles((b) => [...b, { id: messageId, from: "customer", text: body }]);
@@ -222,11 +321,8 @@ export default function PhonePage() {
     try {
       const res = await fetch("/api/whatsapp", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(open ? { "X-Conversation-With-Person": "true" } : {}),
-        },
-        body: JSON.stringify(buildPayload(body, messageId)),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildPayload(body, messageId, sessionId)),
       });
       const data: {
         steps?: Step[];
@@ -294,14 +390,35 @@ export default function PhonePage() {
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white/20 text-sm font-semibold">
               L
             </div>
-            <div>
+            <div className="flex-1">
               <p className="text-sm font-semibold leading-tight">Liwan Desk</p>
               <p className="text-xs text-white/70">online</p>
             </div>
+            <button
+              type="button"
+              onClick={newChat}
+              className="rounded-full bg-white/15 px-3 py-1 text-xs font-medium text-white hover:bg-white/25"
+            >
+              New chat
+            </button>
           </header>
 
           <div className="flex-1 space-y-2 overflow-y-auto p-3">
-            {bubbles.length === 0 && (
+            {loadState === "loading" && (
+              <p className="mt-6 text-center text-xs text-neutral-500">Loading your chat…</p>
+            )}
+            {loadState === "failed" && (
+              <div className="mt-6 rounded-lg bg-amber-100 p-3 text-center text-xs text-amber-900">
+                Could not load the earlier messages, so this chat may look empty even though it was saved.{" "}
+                <button type="button" className="font-semibold underline" onClick={() => {
+                    setLoadState("loading");
+                    setReloadTick((t) => t + 1);
+                  }}>
+                  Try again
+                </button>
+              </div>
+            )}
+            {loadState === "ready" && bubbles.length === 0 && (
               <p className="mt-6 text-center text-xs text-neutral-500">
                 Type a message below as the customer.
               </p>
@@ -335,7 +452,7 @@ export default function PhonePage() {
             />
             <button
               type="submit"
-              disabled={sending || !text.trim()}
+              disabled={sending || !text.trim() || !sessionId}
               className="rounded-full bg-[#075e54] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
             >
               Send
@@ -346,6 +463,7 @@ export default function PhonePage() {
 
       {/* Right: what the agent did */}
       <section className="mx-auto w-full max-w-md">
+        {notice && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{notice}</p>}
         {handoffs.length > 0 && (
           <div className="mb-6">
             <h2 className="mb-3 text-lg font-semibold text-neutral-900">Handed to a person</h2>
@@ -387,7 +505,7 @@ export default function PhonePage() {
                       <form
                         onSubmit={(e) => {
                           e.preventDefault();
-                          answerAsReceptionist(h);
+                          void answerAsReceptionist(h);
                         }}
                         className="mt-3 flex gap-2"
                       >
@@ -407,7 +525,7 @@ export default function PhonePage() {
                       </form>
                       <button
                         type="button"
-                        onClick={() => handBack(h)}
+                        onClick={() => void handBack()}
                         className="mt-2 text-xs font-medium text-neutral-600 underline"
                       >
                         Done, hand back to the agent
